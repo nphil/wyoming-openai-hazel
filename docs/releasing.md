@@ -26,15 +26,16 @@ Use this when **our own code** changed (a "Hazel patch release") or when the wat
    gh workflow run release.yml -f version=0.7.0-hazel.2 -f notes='Early transcription now also works when the room is noisy.'
    ```
 
-4. Watch it: `gh run watch` (pick the run), or open the Actions tab. When it is green, the image and the release exist.
+4. Watch it: `gh run watch` (pick the run), or open the Actions tab. A full run takes about five minutes. When it is green, the image and the release exist.
+5. Check it (optional): `gh release view v0.7.0-hazel.2` shows the release page, and `docker pull ghcr.io/nphil/wyoming-openai-hazel:0.7.0-hazel.2` fetches the image.
 
 What the robot does, in order (it stops at the first red step and publishes nothing):
 
 1. **plan**: checks the version number (right shape, not used before, matches the upstream version being built).
-2. **test**: the full test suite inside the upstream `wyoming_openai` image.
+2. **test**: the full test suite inside the upstream `wyoming_openai` image. It always runs fresh; a result from an earlier `ci` run is never reused.
 3. **build**: builds the real image.
 4. **smoke test**: starts that image next to stand-in speech servers and talks to it like Home Assistant.
-5. **push**: only now does the image go to `ghcr.io/nphil/wyoming-openai-hazel`, as `0.7.0-hazel.2` and `latest`. It is the very same image that was smoke-tested, not a rebuild.
+5. **push**: only now does the image go to `ghcr.io/nphil/wyoming-openai-hazel`. It is the very same image that was smoke-tested, not a rebuild. The version tag (`0.7.0-hazel.2`) goes first; then the robot asks the registry the same question Unraid's Docker tab asks, and only if that is answered does `latest` move.
 6. **release**: creates the tag `v0.7.0-hazel.2` and the GitHub Release with your notes.
 
 Options (all optional):
@@ -45,7 +46,7 @@ Options (all optional):
 | no `-f version=...` | Only prove that tests, build and smoke test pass. Publishes nothing and cannot move `latest`. |
 | `-f upstream_version=0.7.1` | Build on another `wyoming_openai` version than the one in `upstream.version`. The version must match: `0.7.1-hazel.1` goes with `0.7.1`. |
 
-Only one release runs at a time. A release can only be cut from the `main` branch (rehearse other branches with `dry_run`).
+Only one release runs at a time. A release can only be cut from the `main` branch (rehearse other branches with `dry_run`). Longer notes are easiest from a file: `-f notes="$(cat notes.md)"`.
 
 ### A Hazel patch release (our code changed, upstream did not)
 
@@ -125,8 +126,9 @@ All versions: <https://github.com/nphil/wyoming-openai-hazel/pkgs/container/wyom
 ## Good to know
 
 * **Why only linux/amd64:** the only machine that runs this image is an x86-64 Unraid server, and the smoke test can only start a container of the runner's own kind. An ARM image would be published without ever having been started, which is exactly what this pipeline prevents.
-* **The image can be pulled without a login only if the package is public.** GitHub creates a new package as private; only the web page can change that: github.com, your profile, **Packages**, `wyoming-openai-hazel`, **Package settings**, *Danger Zone*, **Change visibility**, Public. Unraid's "update ready" check also needs this.
+* **The image is public.** Anyone can pull `ghcr.io/nphil/wyoming-openai-hazel` without a login, and Unraid's "update ready" check needs no credentials. The package came out public when the first release created it, and it is linked to this repository. If it ever turns private (a workflow cannot change that; only the website can): github.com, your profile, **Packages**, `wyoming-openai-hazel`, **Package settings**, *Danger Zone*, **Change visibility**, Public.
 * **Why `ci` also tests on 0.6.1:** if the 0.6.1 run turns red while the current one is green, we have started to depend on something that only exists in newer upstream versions. It is a warning for us; a release only needs the version being released to pass.
 * **The watcher pauses itself:** GitHub switches off scheduled workflows in a repository with no activity for 60 days. If the daily run ever stops appearing, open the Actions tab, pick *upstream-watch* and press **Enable workflow**.
 * **Where the rules live:** version numbers and "is there something new?" are decided by `scripts/hazel_version.py`, the automatic release text by `scripts/hazel_notes.py`; both are covered by `tests/test_versioning.py`, which runs inside the image build like all other tests.
+* **The watcher's own commit does not start `ci`:** GitHub never lets a workflow's built-in token start another workflow. That is fine, because the release it follows has just tested exactly that code.
 * **Permissions:** each job asks only for what it needs (`packages: write` to push the image, `contents: write` to tag and release, `issues: write` for the watcher's issue). The repository-wide default stays read-only.
