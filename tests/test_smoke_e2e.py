@@ -82,6 +82,14 @@ async def test_a_bridge_with_no_settings_still_prints_a_banner(bridge) -> None:
     assert any(line.endswith("extras on: timing-log") for line in b.stderr_lines), b.stderr
 
 
+async def test_a_bridge_that_only_does_text_to_speech_starts_with_every_extra_on(bridge, backend) -> None:
+    b = await bridge(STT_MODELS=None, STT_BACKEND=None, STT_OPENAI_URL=None, HAZEL_STT_EARLY="1", HAZEL_TTS_CONCURRENCY="2")
+    info = await b.client().describe()
+    assert info.asr == [] and [p.name for p in info.tts] == ["openai-streaming"]
+    spoken = await b.client().synthesize("Hello there.")
+    assert spoken.pcm and spoken.synthesize_stopped
+
+
 # ----- the timing log ---------------------------------------------------------------------------------------------------
 async def test_the_timing_log_reports_speech_to_text_and_first_audio(bridge) -> None:
     b = await bridge()

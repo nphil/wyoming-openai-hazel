@@ -12,7 +12,6 @@ from openai.types.audio import Transcription
 from wyoming.event import Event
 from wyoming.info import Info
 from wyoming_openai.compatibility import (
-    CustomAsyncOpenAI,
     OpenAIBackend,
     create_asr_programs,
     create_info,
@@ -36,7 +35,7 @@ def make_info(*, stt_models: tuple[str, ...] = ("whisper-1",), stt_streaming_mod
 
 
 class FakeTranscriptions:
-    """Records every call; answers with ``text`` (or whatever ``reply`` returns)."""
+    """Records every call (and the audio it carried) and answers with ``text``."""
 
     def __init__(self, text: str = "fake transcript") -> None:
         self.text = text
@@ -80,7 +79,3 @@ def build_handler(config: HazelConfig | None = None, *, stock: bool = False, inf
     handler = handler_class(None, None, info=info or make_info(), stt_client=stt_client, tts_client=None, **kwargs)
     handler.sent = []
     return handler
-
-
-def real_client_class() -> type[CustomAsyncOpenAI]:
-    return CustomAsyncOpenAI

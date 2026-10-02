@@ -11,8 +11,10 @@ per-utterance controller, part 4 the stand-in client, part 5 the handler - all i
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import sys
+import wave
 
 import openai
 import pytest
@@ -90,7 +92,7 @@ async def test_nothing_is_sent_early_when_there_was_no_speech_followed_by_quiet(
 
 
 async def test_speech_that_continues_after_a_short_pause_is_never_cut_off(bridge, backend) -> None:
-    backend.stt_delay_s = 0.6          # the dropped request is still running when the speaker carries on
+    backend.stt_delay_s = 1.0          # the dropped request is still running when the speaker carries on, even on a slow machine
     b = await bridge(HAZEL_STT_EARLY="1")
     audio = LEAD + WORDS + silence(350) + speech(800) + silence(200)       # the second pause is shorter than 300 ms
     text, stamps = await b.client().transcribe(audio)
@@ -172,6 +174,45 @@ async def test_the_early_and_the_normal_request_carry_identical_settings(bridge,
     stock = await bridge(args=STOCK_BRIDGE, **env)
     await stock.client().transcribe(audio, language="en")
     assert [r.fields for r in backend.stt_requests] == [normal.fields]
+
+
+async def test_the_silence_setting_decides_how_early_the_request_goes_out(bridge, backend) -> None:
+    backend.stt_delay_s = 0.2
+    b = await bridge(HAZEL_STT_EARLY="1", HAZEL_STT_EARLY_SILENCE_MS="600")
+    text, stamps = await b.client().transcribe(FULL)
+
+    (request,) = backend.stt_requests
+    lead = stamps.audio_stop_sent - request.arrived
+    assert 0.1 <= lead <= 0.55, f"with 600 ms of silence needed, the request should go out ~0.4 s before audio-stop, not {lead:.2f} s"
+    assert SPEECH_ENDS + 0.55 * RATE <= request.samples <= SPEECH_ENDS + 0.9 * RATE      # 600 ms of silence went with it
+    assert text == f"heard {request.samples} samples"
+    assert "early-stt(silence 600 ms)" in b.stderr
+
+
+async def test_the_cap_on_early_requests_per_command_is_honoured(bridge, backend) -> None:
+    backend.stt_delay_s = 0.2
+    b = await bridge(HAZEL_STT_EARLY="1", HAZEL_STT_EARLY_MAX_PASSES="1")
+    audio = LEAD + WORDS + silence(350) + speech(800) + silence(1000)         # two pauses; with the default both would start a request
+    text, stamps = await b.client().transcribe(audio)
+
+    assert len(backend.stt_requests) == 2
+    first, last = backend.stt_requests
+    assert first.arrived < stamps.audio_stop_sent - 0.3
+    assert last.arrived >= stamps.audio_stop_sent, "the second pause must not start another early request"
+    assert last.pcm == audio and text == f"heard {samples_of(audio)} samples"
+
+
+async def test_two_commands_at_the_same_time_do_not_mix_up_their_answers(bridge, backend) -> None:
+    backend.stt_delay_s = 0.3
+    b = await bridge(HAZEL_STT_EARLY="1")
+    simple = LEAD + WORDS + TAIL                                                  # one pause -> one early request
+    tricky = LEAD + speech(600) + silence(350) + speech(500) + silence(900)       # a dropped early request, then a second one
+    (text_simple, _), (text_tricky, _) = await asyncio.gather(b.client().transcribe(simple), b.client().transcribe(tricky))
+
+    assert text_simple == "heard 24000 samples"                                    # speech + the 300 ms that started the request
+    heard = int(text_tricky.split()[1])
+    assert samples_of(LEAD + speech(600) + silence(350) + speech(500)) + 0.25 * RATE <= heard <= samples_of(tricky), text_tricky
+    assert len(backend.stt_requests) == 3                                          # 1 + 2, none of them lost or doubled
 
 
 # =====================================================================================================================
@@ -527,12 +568,12 @@ async def test_everything_but_transcription_is_passed_through_untouched() -> Non
 # =====================================================================================================================
 # Part 5 - the handler (our subclass of upstream's), driven event by event
 # =====================================================================================================================
-async def drive(handler, fake: FakeSttClient, audio: bytes) -> int:
+async def drive(handler, fake: FakeSttClient, audio: bytes, *, rate: int = RATE, channels: int = 1) -> int:
     """Send one utterance. Returns how many transcription requests existed at the moment audio-stop arrived."""
     await handler.handle_event(Transcribe(language="en").event())
-    await handler.handle_event(AudioStart(rate=RATE, width=2, channels=1).event())
-    for chunk in chunked(audio):
-        await handler.handle_event(AudioChunk(rate=RATE, width=2, channels=1, audio=chunk).event())
+    await handler.handle_event(AudioStart(rate=rate, width=2, channels=channels).event())
+    for chunk in chunked(audio, bytes_per_second=rate * 2 * channels):
+        await handler.handle_event(AudioChunk(rate=rate, width=2, channels=channels, audio=chunk).event())
         await asyncio.sleep(0)                                                # lets a started early request run
     before_stop = len(fake.transcriptions.calls)
     await handler.handle_event(AudioStop().event())
@@ -624,3 +665,20 @@ async def test_with_the_extra_off_the_client_is_not_wrapped_and_nothing_is_sent_
 def test_a_bridge_without_speech_to_text_starts_fine_with_the_extra_on() -> None:
     handler = build_handler(EARLY_ON, stt_client=None)                        # text-to-speech only
     assert handler._stt_client is None
+
+
+def upsample(pcm: bytes, *, factor: int, channels: int) -> bytes:
+    """16 kHz mono -> ``16 kHz * factor`` with ``channels`` channels, by repeating every sample."""
+    return b"".join(pcm[i:i + 2] * (factor * channels) for i in range(0, len(pcm), 2))
+
+
+async def test_the_early_request_keeps_the_audio_format_of_the_stream() -> None:
+    rate, channels = 48000, 2
+    fake = FakeSttClient("hello")
+    handler = build_handler(EARLY_ON, stt_client=fake)
+    assert await drive(handler, fake, upsample(FULL, factor=3, channels=channels), rate=rate, channels=channels) == 1
+    (early_wav,) = fake.transcriptions.wav
+    with wave.open(io.BytesIO(early_wav)) as early:
+        assert (early.getframerate(), early.getnchannels(), early.getsampwidth()) == (rate, channels, 2)
+        assert early.getnframes() == 1500 * rate // 1000              # the speech plus the 300 ms of silence that started it
+    assert transcripts(handler) == ["hello"]
