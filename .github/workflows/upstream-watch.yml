@@ -1,0 +1,243 @@
+name: upstream-watch
+
+# Once a day: has roryeckel/wyoming_openai published a newer release than the one we build on?
+#   * No  -> the run says "up to date" and ends green. Nothing else happens.
+#   * Yes -> release.yml builds and tests our image on the new version and, only if every test and the smoke test pass,
+#            publishes it as <new version>-hazel.1 (or the next patch level) and moves upstream.version forward.
+#            If anything fails, NOTHING is published and an issue is opened so a person looks at it.
+# Run it by hand to rehearse: `gh workflow run upstream-watch.yml -f upstream_version=0.6.1 -f dry_run=true`.
+on:
+  schedule:
+    # Daily at 07:23 UTC. An odd minute on purpose: GitHub's schedule queue is busiest at :00 and :30.
+    - cron: '23 7 * * *'
+  workflow_dispatch:
+    inputs:
+      upstream_version:
+        description: 'For testing only: pretend this is upstream''s newest release (e.g. 0.6.1). Empty = ask GitHub.'
+        required: false
+        type: string
+        default: ''
+      dry_run:
+        description: 'Do everything except publishing and moving upstream.version (and no issue is opened on failure).'
+        required: false
+        type: boolean
+        default: false
+
+# Different group name from release.yml's on purpose: a caller and the workflow it calls must not share one.
+concurrency:
+  group: upstream-watch
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      new: ${{ steps.decide.outputs.new }}
+      bump: ${{ steps.decide.outputs.bump }}
+      upstream: ${{ steps.decide.outputs.upstream }}
+      version: ${{ steps.decide.outputs.version }}
+      notes: ${{ steps.notes.outputs.notes }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ask GitHub for the newest wyoming_openai release
+        id: upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OVERRIDE: ${{ inputs.upstream_version }}
+        run: |
+          set -euo pipefail
+          release_json="$RUNNER_TEMP/upstream-release.json"
+          if [ -n "$OVERRIDE" ]; then
+            # Testing: the version may not even exist upstream (that is how the failure path is rehearsed), so a missing
+            # release page is fine here, and only here.
+            latest="$OVERRIDE"
+            if gh api "repos/roryeckel/wyoming_openai/releases/tags/v$latest" > "$release_json" 2> "$RUNNER_TEMP/gh-error.txt"; then
+              :
+            elif grep -q 'HTTP 404' "$RUNNER_TEMP/gh-error.txt"; then
+              echo "Upstream has no release page for v$latest (fine while testing)."
+              echo '{}' > "$release_json"
+            else
+              cat "$RUNNER_TEMP/gh-error.txt" >&2
+              exit 1
+            fi
+          else
+            gh api repos/roryeckel/wyoming_openai/releases/latest > "$release_json"
+            tag="$(jq -r '.tag_name' "$release_json")"
+            latest="${tag#v}"
+          fi
+          jq -r '.body // ""' "$release_json" > "$RUNNER_TEMP/upstream-body.md"
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+          echo "url=$(jq -r '.html_url // ""' "$release_json")" >> "$GITHUB_OUTPUT"
+
+      - name: Compare with what we track and what we have released
+        id: decide
+        env:
+          LATEST: ${{ steps.upstream.outputs.latest }}
+          FORCE: ${{ inputs.upstream_version != '' }}
+        run: |
+          set -euo pipefail
+          tracked="$(tr -d '[:space:]' < upstream.version)"
+          # The git tags are the record of what has been released. Ask the remote itself, not a possibly shallow clone.
+          git ls-remote --tags --refs origin | sed 's#.*refs/tags/##' > "$RUNNER_TEMP/tags.txt"
+          args=()
+          if [ "$FORCE" = true ]; then
+            args+=(--force)
+          fi
+          decision="$(python3 scripts/hazel_version.py decide --latest "$LATEST" --tracked "$tracked" --tags-file "$RUNNER_TEMP/tags.txt" "${args[@]}")"
+          echo "$decision" | tee -a "$GITHUB_OUTPUT"
+
+          reason="$(sed -n 's/^reason=//p' <<< "$decision")"
+          highest="$(sed -n 's/^highest=//p' <<< "$decision")"
+          {
+            echo "### Upstream watch"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Newest wyoming_openai release | \`$LATEST\` |"
+            echo "| Version we track (upstream.version) | \`$tracked\` |"
+            echo "| Newest Hazel release so far | \`${highest:-none}\` |"
+            echo
+            echo "$reason"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "$reason"
+
+      - name: Write the release notes
+        id: notes
+        if: steps.decide.outputs.new == 'true'
+        env:
+          UPSTREAM: ${{ steps.decide.outputs.upstream }}
+          URL: ${{ steps.upstream.outputs.url }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [ -n "$URL" ]; then
+            args+=(--url "$URL")
+          fi
+          python3 scripts/hazel_notes.py --upstream "$UPSTREAM" --body-file "$RUNNER_TEMP/upstream-body.md" "${args[@]}" > "$RUNNER_TEMP/notes.md"
+          # A random delimiter, so no line of the upstream text can end the value early.
+          delimiter="NOTES_$(openssl rand -hex 8)"
+          {
+            echo "notes<<$delimiter"
+            cat "$RUNNER_TEMP/notes.md"
+            echo "$delimiter"
+          } >> "$GITHUB_OUTPUT"
+
+  # Builds, tests, smoke-tests and publishes. The calling job must grant the permissions the called jobs need.
+  release:
+    name: release
+    needs: check
+    if: needs.check.outputs.new == 'true'
+    permissions:
+      contents: write
+      packages: write
+    uses: ./.github/workflows/release.yml
+    with:
+      version: ${{ needs.check.outputs.version }}
+      upstream_version: ${{ needs.check.outputs.upstream }}
+      notes: ${{ needs.check.outputs.notes }}
+      dry_run: ${{ inputs.dry_run == true }}
+    secrets: inherit
+
+  # Moves upstream.version forward once the release exists (also repairs the case where an earlier run published but
+  # could not write to main). Never on a dry run, never backwards.
+  bump:
+    name: bump
+    needs: [check, release]
+    if: ${{ !cancelled() && inputs.dry_run != true && needs.check.outputs.bump == 'true' && (needs.release.result == 'success' || needs.check.outputs.new != 'true') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Commit the new upstream.version to main
+        env:
+          UPSTREAM: ${{ needs.check.outputs.upstream }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$UPSTREAM" > upstream.version
+          if git diff --quiet -- upstream.version; then
+            echo "upstream.version already says $UPSTREAM; nothing to do."
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add upstream.version
+          git commit -m "chore: track wyoming_openai $UPSTREAM"
+          # Somebody may have pushed to main in the meantime: rebase and try again a few times.
+          for attempt in 1 2 3; do
+            if git pull --rebase origin main && git push origin HEAD:main; then
+              echo "Pushed: upstream.version is now $UPSTREAM" | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep $((attempt * 5))
+          done
+          echo "::error title=Could not update main::upstream.version could not be pushed to main. The release itself is fine; the next daily run repeats this step."
+          exit 1
+
+  # Opens (or adds to) an issue when a release attempt failed, so a person gets an email instead of silence.
+  report:
+    name: report
+    needs: [check, release]
+    if: ${{ failure() && needs.release.result == 'failure' && inputs.dry_run != true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - name: Open or update the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          UPSTREAM: ${{ needs.check.outputs.upstream }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title="Upstream wyoming_openai $UPSTREAM does not pass our tests"
+
+          # Which job (and step) went red? The called workflow's jobs show up here as "release / test" and so on.
+          failed="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" --jq '
+            .jobs[] | select(.conclusion == "failure")
+            | "- [" + .name + "](" + .html_url + ")"
+              + ([.steps[]? | select(.conclusion == "failure") | .name] | if length > 0 then ", step: " + join(", ") else "" end)' || true)"
+          if [ -z "$failed" ]; then
+            failed="- (could not read the list of failed jobs; open the run page below)"
+          fi
+
+          cat > "$RUNNER_TEMP/issue.md" <<EOF
+          The daily watcher found **wyoming_openai $UPSTREAM**, built our image on it and ran the tests. Something failed, so the new version was not released.
+
+          **What failed**
+
+          $failed
+
+          **Run:** $RUN_URL
+
+          **Is anything published?** If the failed job is \`release / test\` or \`release / build\`: no. Nothing was pushed, and \`latest\` still points at the last good image. If it is \`release / release\`: the image was already pushed and only the GitHub Release page is missing; re-run the failed job from the run page.
+
+          **What to do:** see "When the watcher opens an issue" in [docs/releasing.md](https://github.com/$GITHUB_REPOSITORY/blob/main/docs/releasing.md). Nothing is urgent: the version you run today keeps working.
+          EOF
+
+          gh label create upstream-watch --force --color B60205 \
+            --description "Opened automatically by the upstream-watch workflow" > /dev/null
+
+          existing="$(gh issue list --label upstream-watch --state open --limit 100 --json number,title \
+            | jq -r --arg t "$title" '[.[] | select(.title == $t)] | first | .number // empty')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file "$RUNNER_TEMP/issue.md"
+            echo "Added a comment to issue #$existing" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            url="$(gh issue create --title "$title" --label upstream-watch --body-file "$RUNNER_TEMP/issue.md")"
+            echo "Opened $url" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi

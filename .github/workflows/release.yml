@@ -1,0 +1,315 @@
+name: release
+
+# The ONLY thing that publishes an image. (The daily watcher, upstream-watch.yml, calls this file too.)
+#
+#   * run WITH a version   = a release: the image is tagged <version> and latest, the git tag v<version> is created and a
+#                            GitHub Release is published whose body is `notes`. Unraid's Docker tab shows that body as the
+#                            changelog: it finds it through the image labels org.opencontainers.image.version (= version)
+#                            and org.opencontainers.image.source (= this repository).
+#   * run WITHOUT a version = only proves that the tests, the build and the smoke test pass. Nothing is published, so
+#                            `latest` does not move and Unraid sees no update.
+#   * dry_run              = everything except the three publishing steps (push the image, create the tag, publish the
+#                            release). Use it to rehearse a release.
+#
+# Order matters: tests -> build -> smoke test of the finished image -> only then push -> only then tag + release. If any
+# step before the push fails, nothing has been published. The image that is pushed is the very image that was smoke-tested
+# (it is pushed from the same runner, not rebuilt).
+#
+# linux/amd64 only, on purpose: the only machine that runs this image is an x86-64 Unraid server, and the smoke test
+# can only start a container of the runner's own architecture. An arm64 build would be published without ever having
+# been started, which is exactly what this pipeline exists to prevent.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version, e.g. 0.7.0-hazel.2 (no leading v). Empty = only build and test, publish nothing.'
+        required: false
+        type: string
+        default: ''
+      notes:
+        description: 'Release notes in markdown. Unraid shows them as the changelog. Empty = a one-line default.'
+        required: false
+        type: string
+        default: ''
+      upstream_version:
+        description: 'wyoming_openai version to build on, e.g. 0.7.0. Empty = the version in upstream.version.'
+        required: false
+        type: string
+        default: ''
+      dry_run:
+        description: 'Do everything except publishing (no image push, no tag, no release).'
+        required: false
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      version:
+        description: 'Release version, e.g. 0.7.0-hazel.2 (no leading v). Empty = only build and test, publish nothing.'
+        required: false
+        type: string
+        default: ''
+      notes:
+        description: 'Release notes in markdown. Unraid shows them as the changelog. Empty = a one-line default.'
+        required: false
+        type: string
+        default: ''
+      upstream_version:
+        description: 'wyoming_openai version to build on, e.g. 0.7.0. Empty = the version in upstream.version.'
+        required: false
+        type: string
+        default: ''
+      dry_run:
+        description: 'Do everything except publishing (no image push, no tag, no release).'
+        required: false
+        type: boolean
+        default: false
+
+# One release at a time, and a running one is never cancelled half way through publishing.
+# (A third run that arrives while one runs and one waits replaces the waiting one; that is GitHub's rule.)
+concurrency:
+  group: hazel-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  DOCKER_BUILD_SUMMARY: false
+  DOCKER_BUILD_RECORD_UPLOAD: false
+
+jobs:
+  # Cheap checks first, so a typo in the version fails in seconds instead of after a full build.
+  plan:
+    name: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      upstream: ${{ steps.plan.outputs.upstream }}
+      version: ${{ steps.plan.outputs.version }}
+      publish: ${{ steps.plan.outputs.publish }}
+      image: ${{ steps.plan.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the inputs and decide what this run does
+        id: plan
+        env:
+          VERSION: ${{ inputs.version }}
+          UPSTREAM_INPUT: ${{ inputs.upstream_version }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          upstream="${UPSTREAM_INPUT:-$(tr -d '[:space:]' < upstream.version)}"
+
+          # The git tags are the record of what has been released. Ask the remote itself, not a possibly shallow clone.
+          git ls-remote --tags --refs origin | sed 's#.*refs/tags/##' > "$RUNNER_TEMP/tags.txt"
+
+          if [ -n "$VERSION" ]; then
+            python3 scripts/hazel_version.py check --version "$VERSION" --upstream "$upstream" --tags-file "$RUNNER_TEMP/tags.txt"
+          else
+            python3 scripts/hazel_version.py check --upstream "$upstream"
+          fi
+
+          publish=false
+          if [ -n "$VERSION" ] && [ "$DRY_RUN" != "true" ]; then
+            if [ "$REF" != "refs/heads/main" ]; then
+              echo "::error title=Not on main::A release can only be cut from the main branch (this run is on $REF). Use dry_run to rehearse on a branch."
+              exit 1
+            fi
+            publish=true
+          fi
+
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          {
+            echo "upstream=$upstream"
+            echo "version=$VERSION"
+            echo "publish=$publish"
+            echo "image=$image"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### What this run does"
+            echo
+            echo "- Builds on **wyoming_openai $upstream**."
+            if [ "$publish" = true ]; then
+              echo "- **Releases $VERSION**: pushes \`$image:$VERSION\` and \`$image:latest\`, creates tag \`v$VERSION\` and a GitHub Release."
+            elif [ -z "$VERSION" ]; then
+              echo "- No version given, so it **only proves the build**. Nothing is published."
+            else
+              echo "- Dry run of **$VERSION**: everything except pushing, tagging and releasing. Nothing is published."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # The full test suite inside the upstream image. Same step as ci.yml, but on the version being released.
+  test:
+    name: test
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Run the tests inside the upstream image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: test
+          outputs: type=cacheonly
+          build-args: UPSTREAM_VERSION=${{ needs.plan.outputs.upstream }}
+          cache-from: type=gha,scope=test-${{ needs.plan.outputs.upstream }}
+          cache-to: type=gha,mode=max,ignore-error=true,scope=test-${{ needs.plan.outputs.upstream }}
+
+  # Builds the real image, starts it and talks to it, and only if that works pushes THAT image.
+  build:
+    name: build
+    needs: [plan, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Only used for the list of image tags. `latest` is in the list only when this run really publishes, so it can
+      # never move on a dry run or a build-only run.
+      - name: Work out the image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ needs.plan.outputs.image }}
+          flavor: latest=false
+          tags: |
+            type=raw,value=${{ needs.plan.outputs.version || 'dev' }}
+            type=raw,value=latest,enable=${{ needs.plan.outputs.publish == 'true' }}
+
+      # Loaded into the runner's own Docker (not pushed yet) so it can be started and tested first. The version and source
+      # labels come from the Dockerfile (VERSION build argument); they are what Unraid's ShipLog uses to find the release notes.
+      - name: Build the image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: final
+          platforms: linux/amd64
+          load: true
+          tags: |
+            hazel-smoke:local
+            ${{ steps.meta.outputs.tags }}
+          labels: org.opencontainers.image.revision=${{ github.sha }}
+          build-args: |
+            VERSION=${{ needs.plan.outputs.version || 'dev' }}
+            UPSTREAM_VERSION=${{ needs.plan.outputs.upstream }}
+          cache-from: |
+            type=gha,scope=final-${{ needs.plan.outputs.upstream }}
+            type=gha,scope=test-${{ needs.plan.outputs.upstream }}
+          cache-to: type=gha,mode=max,ignore-error=true,scope=final-${{ needs.plan.outputs.upstream }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # Starts the finished image next to stand-in speech servers and talks to it like Home Assistant does.
+      - name: Smoke test the finished image
+        run: |
+          python -m pip install --disable-pip-version-check wyoming aiohttp
+          python tools/smoke_test.py hazel-smoke:local
+
+      - name: Log in to the GitHub container registry
+        if: needs.plan.outputs.publish == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Everything above passed, so now (and only now) the image goes out. The version tag first, `latest` last: if the
+      # second push fails, `latest` simply stays where it was.
+      - name: Push the tested image
+        if: needs.plan.outputs.publish == 'true'
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r tag; do
+            docker push "$tag"
+          done <<< "$TAGS"
+
+      # Ask the registry itself what it now serves, so the summary shows facts and not hopes.
+      - name: Report what the registry serves
+        if: needs.plan.outputs.publish == 'true'
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### Published"
+            echo
+            echo "| Image tag | Digest (the fingerprint of the image) |"
+            echo "|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          first=""
+          while IFS= read -r tag; do
+            digest="$(docker buildx imagetools inspect "$tag" | awk '/^Digest:/ {print $2; exit}')"
+            if [ -z "$digest" ]; then
+              echo "::error::the registry does not serve $tag after the push"
+              exit 1
+            fi
+            echo "| \`$tag\` | \`$digest\` |" >> "$GITHUB_STEP_SUMMARY"
+            echo "$tag -> $digest"
+            if [ -z "$first" ]; then
+              first="$digest"
+            elif [ "$digest" != "$first" ]; then
+              echo "::error::$tag does not point at the same image as the first tag"
+              exit 1
+            fi
+          done <<< "$TAGS"
+
+      - name: Report that nothing was published
+        if: needs.plan.outputs.publish != 'true'
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          {
+            echo "### Not published"
+            echo
+            echo "The image built and passed the smoke test, but this run publishes nothing (dry run, or no version given)."
+            echo "A real release would push: $(paste -sd ',' - <<< "$TAGS" | sed 's/,/, /g')"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Creates the tag and the GitHub Release (its body is the changelog Unraid shows).
+  release:
+    name: release
+    needs: [plan, build]
+    if: needs.plan.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      # The notes arrive through the environment, never pasted into the script, so nothing in them can run as code.
+      - name: Write the release notes
+        env:
+          NOTES: ${{ inputs.notes }}
+          UPSTREAM: ${{ needs.plan.outputs.upstream }}
+        run: |
+          set -euo pipefail
+          if [ -n "$(printf '%s' "$NOTES" | tr -d '[:space:]')" ]; then
+            printf '%s\n' "$NOTES" > "$RUNNER_TEMP/notes.md"
+          else
+            printf 'Built on wyoming_openai %s.\n' "$UPSTREAM" > "$RUNNER_TEMP/notes.md"
+          fi
+
+      # The tag is created on the exact commit that was tested and built, not on whatever main is by now.
+      - name: Publish the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.plan.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          name: wyoming-openai-hazel v${{ needs.plan.outputs.version }}
+          body_path: ${{ runner.temp }}/notes.md
+          make_latest: true

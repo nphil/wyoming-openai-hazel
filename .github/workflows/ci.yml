@@ -1,0 +1,66 @@
+name: ci
+
+# Runs the whole test suite on every push to main and on every pull request. The tests run INSIDE the upstream bridge
+# image (the Dockerfile's `test` stage), i.e. on exactly the Python, libraries and wyoming_openai version that would
+# ship. A failing test fails the image build, so there is no way to forget to run them.
+# Nothing is published from here; only release.yml publishes.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Keep the run pages short: the pytest output in the log is what matters here.
+  DOCKER_BUILD_SUMMARY: false
+  DOCKER_BUILD_RECORD_UPLOAD: false
+
+jobs:
+  test:
+    name: test (wyoming_openai ${{ matrix.upstream }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      # Both legs always finish, so one red leg never hides the other.
+      fail-fast: false
+      matrix:
+        # "current" = the version in upstream.version, i.e. what we ship.
+        # "0.6.1" = the previous upstream release we still work with. If it goes red while "current" is green, we have
+        # started to depend on something that only exists in newer upstream versions. Raise this number only on purpose
+        # (when we decide to stop supporting the old release).
+        upstream: [current, '0.6.1']
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pick the upstream version for this leg
+        id: up
+        env:
+          LEG: ${{ matrix.upstream }}
+        run: |
+          set -euo pipefail
+          version="$LEG"
+          if [ "$version" = current ]; then
+            version="$(tr -d '[:space:]' < upstream.version)"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Running the tests inside ghcr.io/roryeckel/wyoming_openai:$version" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: docker/setup-buildx-action@v3
+
+      # `--target test` makes the build run pytest as its last step; if any test fails, this step fails.
+      # Nothing is loaded or pushed (cacheonly): the image is only a vehicle for running the tests.
+      - name: Run the tests inside the upstream image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: test
+          outputs: type=cacheonly
+          build-args: UPSTREAM_VERSION=${{ steps.up.outputs.version }}
+          cache-from: type=gha,scope=test-${{ steps.up.outputs.version }}
+          cache-to: type=gha,mode=max,ignore-error=true,scope=test-${{ steps.up.outputs.version }}
