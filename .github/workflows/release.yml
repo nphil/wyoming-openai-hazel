@@ -141,7 +141,9 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # The full test suite inside the upstream image. Same step as ci.yml, but on the version being released.
+  # The full test suite inside the upstream image, on the version being released. Same step as ci.yml, except that the test
+  # stage is never taken from the build cache: right after a green ci run on the same commit the cache would otherwise
+  # replay that old result and the release would "pass" without running a single test.
   test:
     name: test
     needs: plan
@@ -157,6 +159,7 @@ jobs:
         with:
           context: .
           target: test
+          no-cache-filters: test
           outputs: type=cacheonly
           build-args: UPSTREAM_VERSION=${{ needs.plan.outputs.upstream }}
           cache-from: type=gha,scope=test-${{ needs.plan.outputs.upstream }}
