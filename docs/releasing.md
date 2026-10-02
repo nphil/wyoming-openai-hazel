@@ -33,7 +33,7 @@ What the robot does, in order (it stops at the first red step and publishes noth
 
 1. **plan**: checks the version number (right shape, not used before, matches the upstream version being built).
 2. **test**: the full test suite inside the upstream `wyoming_openai` image. It always runs fresh; a result from an earlier `ci` run is never reused.
-3. **build**: builds the real image.
+3. **build**: builds the real image and checks its labels: the version and source (this is how Unraid finds the release notes) and the build time, which must be this run's own and not the date inherited from the upstream image.
 4. **smoke test**: starts that image next to stand-in speech servers and talks to it like Home Assistant.
 5. **push**: only now does the image go to `ghcr.io/nphil/wyoming-openai-hazel`. It is the very same image that was smoke-tested, not a rebuild. The version tag (`0.7.0-hazel.2`) goes first; then the robot asks the registry the same question Unraid's Docker tab asks, and only if that is answered does `latest` move.
 6. **release**: creates the tag `v0.7.0-hazel.2` and the GitHub Release with your notes.

@@ -91,6 +91,7 @@ jobs:
       version: ${{ steps.plan.outputs.version }}
       publish: ${{ steps.plan.outputs.publish }}
       image: ${{ steps.plan.outputs.image }}
+      started: ${{ steps.plan.outputs.started }}
     steps:
       - uses: actions/checkout@v7
 
@@ -129,6 +130,7 @@ jobs:
             echo "version=$VERSION"
             echo "publish=$publish"
             echo "image=$image"
+            echo "started=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           } >> "$GITHUB_OUTPUT"
 
           {
@@ -194,6 +196,12 @@ jobs:
             type=raw,value=${{ needs.plan.outputs.version || 'dev' }}
             type=raw,value=latest,enable=${{ needs.plan.outputs.publish == 'true' }}
 
+      # The moment this build starts, in UTC. It becomes the image's org.opencontainers.image.created label. Labels are inherited
+      # from the base image, so without this the published image would show the build date of the UPSTREAM image.
+      - name: Note the build time
+        id: stamp
+        run: echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
       # Loaded into the runner's own Docker (not pushed yet) so it can be started and tested first. The version and source
       # labels come from the Dockerfile (VERSION build argument); they are what Unraid's ShipLog uses to find the release notes.
       - name: Build the image
@@ -206,7 +214,9 @@ jobs:
           tags: |
             hazel-smoke:local
             ${{ steps.meta.outputs.tags }}
-          labels: org.opencontainers.image.revision=${{ github.sha }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ steps.stamp.outputs.created }}
           build-args: |
             VERSION=${{ needs.plan.outputs.version || 'dev' }}
             UPSTREAM_VERSION=${{ needs.plan.outputs.upstream }}
@@ -215,24 +225,42 @@ jobs:
             type=gha,scope=test-${{ needs.plan.outputs.upstream }}
           cache-to: type=gha,mode=max,ignore-error=true,scope=final-${{ needs.plan.outputs.upstream }}
 
-      # Unraid finds the release notes through exactly these two labels. If either is wrong the image would still work but the
-      # changelog would silently never show, so check the finished image before it can be pushed.
-      - name: Check the labels Unraid uses to find the release notes
+      # Unraid finds the release notes through the version and source labels. If either is wrong the image would still work but
+      # the changelog would silently never show. The build-time label is checked as well: labels are inherited from the upstream
+      # image, so a missing or broken one would quietly keep upstream's build date. All of it is checked on the finished image,
+      # before it can be pushed.
+      - name: Check the image labels (version, source, build time)
         env:
           EXPECTED_VERSION: ${{ needs.plan.outputs.version || 'dev' }}
+          RUN_STARTED: ${{ needs.plan.outputs.started }}
         run: |
           set -euo pipefail
           docker inspect hazel-smoke:local --format '{{json .Config.Labels}}' > "$RUNNER_TEMP/labels.json"
           version="$(jq -r '.["org.opencontainers.image.version"] // ""' "$RUNNER_TEMP/labels.json")"
           source="$(jq -r '.["org.opencontainers.image.source"] // ""' "$RUNNER_TEMP/labels.json")"
+          created="$(jq -r '.["org.opencontainers.image.created"] // ""' "$RUNNER_TEMP/labels.json")"
           echo "org.opencontainers.image.version = $version"
           echo "org.opencontainers.image.source  = $source"
+          echo "org.opencontainers.image.created = $created   (this run started at $RUN_STARTED)"
           if [ "$version" != "$EXPECTED_VERSION" ]; then
             echo "::error title=Wrong version label::the image says version '$version' but this run builds '$EXPECTED_VERSION'"
             exit 1
           fi
           if [ "$source" != "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" ]; then
             echo "::error title=Wrong source label::the image says source '$source' but the releases live at '$GITHUB_SERVER_URL/$GITHUB_REPOSITORY'"
+            exit 1
+          fi
+          utc='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$'
+          if ! [[ "$RUN_STARTED" =~ $utc ]]; then
+            echo "::error title=No run start time::the plan job did not report when this run started ('$RUN_STARTED'), so the build time cannot be checked"
+            exit 1
+          fi
+          if ! [[ "$created" =~ $utc ]]; then
+            echo "::error title=Wrong created label::the image's build time is '$created' but it must be a UTC time such as 2026-10-02T20:17:00Z"
+            exit 1
+          fi
+          if [ "$(date -u -d "$created" +%s)" -lt "$(date -u -d "$RUN_STARTED" +%s)" ]; then
+            echo "::error title=Old created label::the image says it was built at $created, which is before this run started ($RUN_STARTED). That is left over from the upstream image."
             exit 1
           fi
 
