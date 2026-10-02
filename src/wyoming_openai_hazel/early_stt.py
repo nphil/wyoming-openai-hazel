@@ -117,7 +117,8 @@ class _Transcriptions:
             state = "already finished" if taken.task.done() else "still running"
             try:
                 result = await asyncio.wait_for(asyncio.shield(taken.task), self._early.timeout_s)
-            except Exception as exc:   # includes cancellation of the inner task and timeouts
+            except Exception as exc:   # the early request failed, or took longer than timeout_s
+                taken.task.cancel()   # one we give up on must not keep occupying the speech server (no-op if it already failed)
                 _LOGGER.warning("early-stt: early answer unusable (%r) - transcribing normally", exc)
             else:
                 _LOGGER.info("early-stt: used the early answer (request began %.0f ms before audio-stop, %s)",
