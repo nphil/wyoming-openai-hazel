@@ -95,6 +95,10 @@ One home server: an Unraid box with a shared Tesla P40, Whisper large-v3-turbo (
 
 Home Assistant itself waits about 0.7 s of silence before it says "finished"; none of this can shorten that wait. These are one household's numbers, not a promise.
 
+**The whole voice command through Home Assistant** (last spoken sample to the first sound of the reply, 24 interleaved pairs of the same recordings, Home Assistant Cloud against this bridge with Whisper and Kokoro on the home server): the local route needed a median of **1.44 s against 1.77 s** for the cloud (the local one was faster by a median of 0.34 s, 95 % interval 0.20 to 0.42 s). Speech-to-text after Home Assistant's wait took 0.01 s locally against 0.09 s in the cloud, and the first sound of the reply came after 0.17 s against 0.50 s.
+
+**A busy server is the weak spot.** While other jobs pushed the server's load above about 40, Whisper itself got slow: a request sent straight to it, without the bridge, took a median of 0.5 s and 3.5 s at the 90th percentile (load 37 to 81). The local route then showed slow trials (the 90th percentile of the whole command was 4.3 s against 1.9 s for the cloud), which no bridge can fix. More CPU priority for the speech server on the host is the thing to try; we have not tested it yet.
+
 ## Upstream
 
 The general-purpose extras are offered to the original project as separate, small pull requests, so that one day this image may not be needed. Nothing here depends on them being accepted.
