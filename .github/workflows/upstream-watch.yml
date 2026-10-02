@@ -127,6 +127,14 @@ jobs:
             cat "$RUNNER_TEMP/notes.md"
             echo "$delimiter"
           } >> "$GITHUB_OUTPUT"
+          # Show the text on the run page too, so a person (or a dry run) can see what the release page would say.
+          {
+            echo "<details><summary>Release notes that go with this release</summary>"
+            echo
+            cat "$RUNNER_TEMP/notes.md"
+            echo
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # Builds, tests, smoke-tests and publishes. The calling job must grant the permissions the called jobs need.
   release:
