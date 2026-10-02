@@ -234,11 +234,15 @@ jobs:
         with:
           python-version: '3.12'
 
-      # Starts the finished image next to stand-in speech servers and talks to it like Home Assistant does.
+      # Starts the finished image next to stand-in speech servers and talks to it like Home Assistant does. It also reads the
+      # image's start-up banner and fails if it names another Hazel or wyoming_openai version than the one this run planned.
       - name: Smoke test the finished image
+        env:
+          EXPECTED_VERSION: ${{ needs.plan.outputs.version || 'dev' }}
+          EXPECTED_UPSTREAM: ${{ needs.plan.outputs.upstream }}
         run: |
           python -m pip install --disable-pip-version-check wyoming aiohttp
-          python tools/smoke_test.py hazel-smoke:local
+          python tools/smoke_test.py hazel-smoke:local --expect-version "$EXPECTED_VERSION" --expect-upstream "$EXPECTED_UPSTREAM"
 
       - name: Log in to the GitHub container registry
         if: needs.plan.outputs.publish == 'true'
