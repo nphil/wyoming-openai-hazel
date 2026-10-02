@@ -209,6 +209,27 @@ jobs:
             type=gha,scope=test-${{ needs.plan.outputs.upstream }}
           cache-to: type=gha,mode=max,ignore-error=true,scope=final-${{ needs.plan.outputs.upstream }}
 
+      # Unraid finds the release notes through exactly these two labels. If either is wrong the image would still work but the
+      # changelog would silently never show, so check the finished image before it can be pushed.
+      - name: Check the labels Unraid uses to find the release notes
+        env:
+          EXPECTED_VERSION: ${{ needs.plan.outputs.version || 'dev' }}
+        run: |
+          set -euo pipefail
+          docker inspect hazel-smoke:local --format '{{json .Config.Labels}}' > "$RUNNER_TEMP/labels.json"
+          version="$(jq -r '.["org.opencontainers.image.version"] // ""' "$RUNNER_TEMP/labels.json")"
+          source="$(jq -r '.["org.opencontainers.image.source"] // ""' "$RUNNER_TEMP/labels.json")"
+          echo "org.opencontainers.image.version = $version"
+          echo "org.opencontainers.image.source  = $source"
+          if [ "$version" != "$EXPECTED_VERSION" ]; then
+            echo "::error title=Wrong version label::the image says version '$version' but this run builds '$EXPECTED_VERSION'"
+            exit 1
+          fi
+          if [ "$source" != "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" ]; then
+            echo "::error title=Wrong source label::the image says source '$source' but the releases live at '$GITHUB_SERVER_URL/$GITHUB_REPOSITORY'"
+            exit 1
+          fi
+
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
