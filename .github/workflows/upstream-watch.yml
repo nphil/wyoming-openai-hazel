@@ -79,14 +79,14 @@ jobs:
         id: decide
         env:
           LATEST: ${{ steps.upstream.outputs.latest }}
-          FORCE: ${{ inputs.upstream_version != '' }}
+          OVERRIDE: ${{ inputs.upstream_version }}
         run: |
           set -euo pipefail
           tracked="$(tr -d '[:space:]' < upstream.version)"
           # The git tags are the record of what has been released. Ask the remote itself, not a possibly shallow clone.
           git ls-remote --tags --refs origin | sed 's#.*refs/tags/##' > "$RUNNER_TEMP/tags.txt"
           args=()
-          if [ "$FORCE" = true ]; then
+          if [ -n "$OVERRIDE" ]; then
             args+=(--force)
           fi
           decision="$(python3 scripts/hazel_version.py decide --latest "$LATEST" --tracked "$tracked" --tags-file "$RUNNER_TEMP/tags.txt" "${args[@]}")"
