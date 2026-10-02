@@ -77,11 +77,14 @@ env:
   DOCKER_BUILD_SUMMARY: false
   DOCKER_BUILD_RECORD_UPLOAD: false
 
+# Runners are pinned to ubuntu-24.04 on purpose, not ubuntu-latest: GitHub moves "latest" to Ubuntu 26 on 2026-10-19, and an
+# unattended release robot must not change its Docker, Python and tool versions on a date nobody chose. To move on, change
+# these lines deliberately and rehearse with a dry run (see docs/releasing.md).
 jobs:
   # Cheap checks first, so a typo in the version fails in seconds instead of after a full build.
   plan:
     name: plan
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       upstream: ${{ steps.plan.outputs.upstream }}
@@ -147,7 +150,7 @@ jobs:
   test:
     name: test
     needs: plan
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
@@ -169,7 +172,7 @@ jobs:
   build:
     name: build
     needs: [plan, test]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: read
@@ -337,7 +340,7 @@ jobs:
     name: release
     needs: [plan, build]
     if: needs.plan.outputs.publish == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: write

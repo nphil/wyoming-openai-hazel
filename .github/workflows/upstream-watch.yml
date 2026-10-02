@@ -9,6 +9,8 @@ name: upstream-watch
 on:
   schedule:
     # Daily at 07:23 UTC. An odd minute on purpose: GitHub's schedule queue is busiest at :00 and :30.
+    # GitHub emails a failed scheduled run to whoever last edited this cron line, so that edit must be committed under the
+    # repository owner's own account (a bot or placeholder address would mean nobody is told).
     - cron: '23 7 * * *'
   workflow_dispatch:
     inputs:
@@ -31,10 +33,13 @@ concurrency:
 permissions:
   contents: read
 
+# Runners are pinned to ubuntu-24.04 on purpose, not ubuntu-latest: GitHub moves "latest" to Ubuntu 26 on 2026-10-19, and an
+# unattended release robot must not change its Docker, Python and tool versions on a date nobody chose. To move on, change
+# these lines deliberately and rehearse with a dry run (see docs/releasing.md).
 jobs:
   check:
     name: check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
       new: ${{ steps.decide.outputs.new }}
@@ -158,7 +163,7 @@ jobs:
     name: bump
     needs: [check, release]
     if: ${{ !cancelled() && inputs.dry_run != true && needs.check.outputs.bump == 'true' && (needs.release.result == 'success' || needs.check.outputs.new != 'true') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: write
@@ -197,7 +202,7 @@ jobs:
     name: report
     needs: [check, release]
     if: ${{ failure() && needs.release.result == 'failure' && inputs.dry_run != true }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read

@@ -21,10 +21,13 @@ env:
   DOCKER_BUILD_SUMMARY: false
   DOCKER_BUILD_RECORD_UPLOAD: false
 
+# Runners are pinned to ubuntu-24.04 on purpose, not ubuntu-latest: GitHub moves "latest" to Ubuntu 26 on 2026-10-19, and an
+# unattended release robot must not change its Docker, Python and tool versions on a date nobody chose. To move on, change
+# these lines deliberately and rehearse with a dry run (see docs/releasing.md).
 jobs:
   test:
     name: test (wyoming_openai ${{ matrix.upstream }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       # Both legs always finish, so one red leg never hides the other.
