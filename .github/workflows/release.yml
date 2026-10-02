@@ -255,16 +255,39 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Everything above passed, so now (and only now) the image goes out. The version tag first, `latest` last: if the
-      # second push fails, `latest` simply stays where it was.
+      # Everything above passed, so now (and only now) the image goes out, in this order:
+      #   1. the version tag;
+      #   2. a check that Unraid's own update check can read it, using the very request Unraid sends;
+      #   3. `latest`.
+      # So `latest` can only ever move to an image that Unraid's Docker tab will see, and if anything fails `latest` stays put.
       - name: Push the tested image
         if: needs.plan.outputs.publish == 'true'
         env:
           TAGS: ${{ steps.meta.outputs.tags }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          repo="${GITHUB_REPOSITORY,,}"
+          first=true
           while IFS= read -r tag; do
             docker push "$tag"
+            if [ "$first" = true ]; then
+              first=false
+              # Unraid asks the registry for the digest of a tag with exactly this Accept header (getRemoteVersionV2 in
+              # /usr/local/emhttp/plugins/dynamix.docker.manager/include/DockerClient.php). An image the registry will not
+              # hand out for it shows "not available" in the Docker tab forever, which is what this project exists to avoid.
+              accept='application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json,application/vnd.oci.image.index.v1+json'
+              token="$(curl -fsS -u "$GITHUB_ACTOR:$GH_TOKEN" "https://ghcr.io/token?service=ghcr.io&scope=repository:$repo:pull" | jq -r '.token')"
+              code="$(curl -sS -o /dev/null -D "$RUNNER_TEMP/manifest-headers.txt" -w '%{http_code}' \
+                -H "Authorization: Bearer $token" -H "Accept: $accept" "https://ghcr.io/v2/$repo/manifests/${tag##*:}")"
+              digest="$(awk 'tolower($1) == "docker-content-digest:" {print $2}' "$RUNNER_TEMP/manifest-headers.txt" | tr -d '\r')"
+              mediatype="$(awk 'tolower($1) == "content-type:" {print $2}' "$RUNNER_TEMP/manifest-headers.txt" | tr -d '\r')"
+              echo "Unraid-style lookup of ${tag##*:}: HTTP $code, digest ${digest:-none}, manifest type ${mediatype:-unknown}"
+              if [ "$code" != 200 ] || [ -z "$digest" ]; then
+                echo "::error title=Unraid could not see the image::The version tag was pushed, but the registry does not answer Unraid's update check for it (HTTP $code). latest was NOT moved."
+                exit 1
+              fi
+            fi
           done <<< "$TAGS"
 
       # Ask the registry itself what it now serves, so the summary shows facts and not hopes.
