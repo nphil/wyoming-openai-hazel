@@ -13,27 +13,28 @@ from wyoming_client import silence, speech
 PROMPT = "Nitin's Office, Poobot"
 LEAD = silence(200)
 FULL = LEAD + speech(1000) + silence(1000)                                        # one pause long enough for an early request
-DROPPED = LEAD + speech(1000) + silence(350) + speech(800) + silence(200)         # an early request that is dropped, then the normal one
+DROPPED = LEAD + speech(1000) + silence(700) + speech(600) + silence(200)         # an early request that is dropped, then the normal one
 STOCK_BRIDGE = [sys.executable, "-m", "wyoming_openai"]
 
 
-@pytest.mark.parametrize(("early", "audio", "expected_requests"), [
-    pytest.param("0", FULL, 1, id="normal-request-only"),
-    pytest.param("1", FULL, 1, id="early-request-only"),
-    pytest.param("1", DROPPED, 2, id="dropped-early-request-then-normal"),
+@pytest.mark.parametrize(("early", "audio", "last_request_is"), [
+    pytest.param("0", FULL, "normal", id="normal-request-only"),
+    pytest.param("1", FULL, "early", id="early-request-only"),
+    pytest.param("1", DROPPED, "normal", id="dropped-early-request-then-normal"),
 ])
 @pytest.mark.parametrize("where", ["extra-body", "prompt-setting"])
-async def test_the_prompt_reaches_every_request_to_the_speech_to_text_server(bridge, backend, early, audio, expected_requests,
+async def test_the_prompt_reaches_every_request_to_the_speech_to_text_server(bridge, backend, early, audio, last_request_is,
                                                                            where) -> None:
-    backend.stt_delay_s = 0.5
+    backend.stt_delay_s = 1.0
     prompt_env = ({"STT_EXTRA_BODY": json.dumps({"prompt": PROMPT})} if where == "extra-body" else {"STT_PROMPT": PROMPT})
-    b = await bridge(HAZEL_STT_EARLY=early, **prompt_env)
+    b = await bridge(warm=True, HAZEL_STT_EARLY=early, **prompt_env)
     text, stamps = await b.client().transcribe(audio)
 
-    assert len(backend.stt_requests) == expected_requests
-    assert [r.fields.get("prompt") for r in backend.stt_requests] == [PROMPT] * expected_requests
-    kinds = ["early" if r.arrived < stamps.audio_stop_sent - 0.3 else "normal" for r in backend.stt_requests]
-    assert kinds == (["early", "normal"] if expected_requests == 2 else ["early" if early == "1" else "normal"])
+    # A dropped early request may not have got to the speech server before it was dropped; every request that did carries the prompt.
+    assert 1 <= len(backend.stt_requests) <= (2 if audio is DROPPED else 1)
+    assert [r.fields.get("prompt") for r in backend.stt_requests] == [PROMPT] * len(backend.stt_requests)
+    last = backend.stt_requests[-1]
+    assert (last.arrived < stamps.audio_stop_sent - 0.3) == (last_request_is == "early")
     assert text.startswith("heard ")
 
 

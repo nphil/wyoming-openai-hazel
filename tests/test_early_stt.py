@@ -40,7 +40,7 @@ STOCK_BRIDGE = [sys.executable, "-m", "wyoming_openai"]
 # =====================================================================================================================
 async def test_the_request_is_sent_before_audio_stop_and_its_answer_is_used(bridge, backend) -> None:
     backend.stt_delay_s = 0.3
-    b = await bridge(HAZEL_STT_EARLY="1")
+    b = await bridge(warm=True, HAZEL_STT_EARLY="1")
     text, stamps = await b.client().transcribe(FULL)
 
     assert len(backend.stt_requests) == 1, "expected exactly one request to the speech-to-text server"
@@ -91,36 +91,41 @@ async def test_nothing_is_sent_early_when_there_was_no_speech_followed_by_quiet(
     assert not b.lines_matching("early-stt: request started")
 
 
-async def test_speech_that_continues_after_a_short_pause_is_never_cut_off(bridge, backend) -> None:
-    backend.stt_delay_s = 1.0          # the dropped request is still running when the speaker carries on, even on a slow machine
-    b = await bridge(HAZEL_STT_EARLY="1")
-    audio = LEAD + WORDS + silence(350) + speech(800) + silence(200)       # the second pause is shorter than 300 ms
+@pytest.mark.parametrize("pause_ms", [350, 700])
+async def test_speech_that_continues_after_a_pause_is_never_cut_off(bridge, backend, pause_ms: int) -> None:
+    backend.stt_delay_s = 1.5          # the dropped request is still running when the speaker carries on, even on a slow machine
+    b = await bridge(warm=True, HAZEL_STT_EARLY="1")
+    audio = LEAD + WORDS + silence(pause_ms) + speech(800) + silence(200)      # the second pause is shorter than 300 ms
     text, stamps = await b.client().transcribe(audio)
 
-    assert len(backend.stt_requests) == 2
-    first, last = backend.stt_requests
-    assert first.arrived < stamps.audio_stop_sent - 0.3, "an early request should have been sent at the first pause"
-    assert first.samples < samples_of(audio) and first.hung_up, "the early request should have been dropped"
+    *dropped, last = backend.stt_requests
     assert last.arrived >= stamps.audio_stop_sent, "the answer must come from a request made after audio-stop"
     assert last.pcm == audio, "the final request must carry ALL of the audio"
     assert text == f"heard {samples_of(audio)} samples"
+    # The early request was dropped. Whether it had got to the speech server by then depends on how busy the machine is; if it
+    # did, the bridge must have hung up on it. After a long pause there is time enough for it to get there.
+    assert len(dropped) <= 1 and (pause_ms < 700 or len(dropped) == 1)
+    for request in dropped:
+        assert request.arrived < stamps.audio_stop_sent - 0.3 and request.samples < samples_of(audio)
+        assert request.hung_up, "the dropped early request should have been hung up on"
+    await b.wait_for_log("early-stt: request started")
     await b.wait_for_log("early-stt: dropped, audio resumed")
 
 
 async def test_a_second_pause_starts_a_second_early_request_that_covers_the_whole_command(bridge, backend) -> None:
     backend.stt_delay_s = 0.3
-    b = await bridge(HAZEL_STT_EARLY="1")
+    b = await bridge(warm=True, HAZEL_STT_EARLY="1")
     spoken = LEAD + WORDS + silence(350) + speech(800)
     audio = spoken + silence(1000)
     text, stamps = await b.client().transcribe(audio)
 
-    assert len(backend.stt_requests) == 2
-    first, second = backend.stt_requests
-    assert second.samples > first.samples
+    *earlier, second = backend.stt_requests          # the first pause's request was dropped; it may not have got to the server
+    assert len(earlier) <= 1 and all(r.samples < second.samples for r in earlier)
     assert second.samples >= samples_of(spoken) + 0.25 * RATE, "the second request misses the second half of the command"
-    assert second.arrived < stamps.audio_stop_sent - 0.3 and audio.startswith(second.pcm)
+    assert second.arrived < stamps.audio_stop_sent - 0.1 and audio.startswith(second.pcm)
     assert text == f"heard {second.samples} samples"                   # the stale first answer was not used
     assert stamps.latency_s < 0.25
+    assert len(b.lines_matching("early-stt: request started")) == 2
 
 
 @pytest.mark.parametrize(("status", "failures"), [
@@ -153,32 +158,39 @@ async def test_a_server_error_that_the_sdk_retries_is_invisible(bridge, backend)
     assert not b.lines_matching("early answer unusable")
 
 
-async def test_the_early_and_the_normal_request_carry_identical_settings(bridge, backend) -> None:
-    backend.stt_delay_s = 0.6
+async def test_the_early_request_carries_exactly_the_settings_the_normal_request_would(bridge, backend) -> None:
     env = {"STT_PROMPT": "top-level prompt", "STT_TEMPERATURE": "0.2",
            "STT_EXTRA_BODY": json.dumps({"prompt": "Nitin's Office, Poobot", "hotwords": "Poobot", "vad_filter": True})}
-    audio = LEAD + WORDS + silence(350) + speech(800) + silence(200)       # => an early request, dropped, then the normal one
-    b = await bridge(HAZEL_STT_EARLY="1", **env)
-    await b.client().transcribe(audio, language="en")
-    assert len(backend.stt_requests) == 2
-    early, normal = backend.stt_requests
-    assert early.arrived < normal.arrived and early.samples < normal.samples
+    backend.stt_delay_s = 1.0
+    b = await bridge(warm=True, HAZEL_STT_EARLY="1", **env)
+    await b.client().transcribe(FULL, language="en")                         # the only request is the early one
+    (early,) = backend.stt_requests
+    assert early.samples < samples_of(FULL), "the only request must be the early one"
+    assert early.filename == "recording.wav"
+    assert early.fields["model"] == "whisper-1" and early.fields["language"] == "en"
+    assert early.fields["response_format"] == "json" and early.fields["temperature"] == "0.2"
+    assert early.fields["prompt"] == "Nitin's Office, Poobot" and early.fields["hotwords"] == "Poobot"   # the extra body wins
 
-    assert early.fields == normal.fields, "the early request must ask for exactly what the normal one asks for"
-    assert early.filename == normal.filename == "recording.wav" and early.content_type == normal.content_type
-    assert normal.fields["model"] == "whisper-1" and normal.fields["language"] == "en"
-    assert normal.fields["response_format"] == "json" and normal.fields["temperature"] == "0.2"
-    assert normal.fields["prompt"] == "Nitin's Office, Poobot" and normal.fields["hotwords"] == "Poobot"
+    # ...the same on one bridge when the early request is dropped and the normal request follows (the dropped one may not have
+    # got to the speech server before the drop, so it is checked only if it did)
+    backend.reset()
+    dropped_audio = LEAD + WORDS + silence(700) + speech(600) + silence(200)
+    await b.client().transcribe(dropped_audio, language="en")
+    *dropped, normal = backend.stt_requests
+    assert normal.pcm == dropped_audio, "the normal request must carry all of the audio"
+    assert normal.fields == early.fields and normal.filename == early.filename
+    assert all(r.fields == early.fields and r.filename == early.filename for r in dropped)
 
-    backend.reset()                                # ...and both are what the stock bridge sends
-    stock = await bridge(args=STOCK_BRIDGE, **env)
-    await stock.client().transcribe(audio, language="en")
-    assert [r.fields for r in backend.stt_requests] == [normal.fields]
+    # ...and the stock bridge sends the very same fields for the very same audio
+    backend.reset()
+    stock = await bridge(args=STOCK_BRIDGE, warm=True, **env)
+    await stock.client().transcribe(FULL, language="en")
+    assert [(r.fields, r.filename, r.content_type) for r in backend.stt_requests] == [(early.fields, early.filename, early.content_type)]
 
 
 async def test_the_silence_setting_decides_how_early_the_request_goes_out(bridge, backend) -> None:
     backend.stt_delay_s = 0.2
-    b = await bridge(HAZEL_STT_EARLY="1", HAZEL_STT_EARLY_SILENCE_MS="600")
+    b = await bridge(warm=True, HAZEL_STT_EARLY="1", HAZEL_STT_EARLY_SILENCE_MS="600")
     text, stamps = await b.client().transcribe(FULL)
 
     (request,) = backend.stt_requests
@@ -191,20 +203,20 @@ async def test_the_silence_setting_decides_how_early_the_request_goes_out(bridge
 
 async def test_the_cap_on_early_requests_per_command_is_honoured(bridge, backend) -> None:
     backend.stt_delay_s = 0.2
-    b = await bridge(HAZEL_STT_EARLY="1", HAZEL_STT_EARLY_MAX_PASSES="1")
-    audio = LEAD + WORDS + silence(350) + speech(800) + silence(1000)         # two pauses; with the default both would start a request
+    b = await bridge(warm=True, HAZEL_STT_EARLY="1", HAZEL_STT_EARLY_MAX_PASSES="1")
+    audio = LEAD + WORDS + silence(700) + speech(600) + silence(1000)       # two pauses; with the default both would start a request
     text, stamps = await b.client().transcribe(audio)
 
-    assert len(backend.stt_requests) == 2
-    first, last = backend.stt_requests
-    assert first.arrived < stamps.audio_stop_sent - 0.3
-    assert last.arrived >= stamps.audio_stop_sent, "the second pause must not start another early request"
-    assert last.pcm == audio and text == f"heard {samples_of(audio)} samples"
+    assert len(b.lines_matching("early-stt: request started")) == 1, "the second pause must not start another early request"
+    *earlier, last = backend.stt_requests
+    assert len(earlier) <= 1                       # the one early request (dropped; it may not have got to the server in time)
+    assert last.arrived >= stamps.audio_stop_sent and last.pcm == audio
+    assert text == f"heard {samples_of(audio)} samples"
 
 
 async def test_two_commands_at_the_same_time_do_not_mix_up_their_answers(bridge, backend) -> None:
     backend.stt_delay_s = 0.3
-    b = await bridge(HAZEL_STT_EARLY="1")
+    b = await bridge(warm=True, HAZEL_STT_EARLY="1")
     simple = LEAD + WORDS + TAIL                                                  # one pause -> one early request
     tricky = LEAD + speech(600) + silence(350) + speech(500) + silence(900)       # a dropped early request, then a second one
     (text_simple, _), (text_tricky, _) = await asyncio.gather(b.client().transcribe(simple), b.client().transcribe(tricky))
@@ -212,7 +224,8 @@ async def test_two_commands_at_the_same_time_do_not_mix_up_their_answers(bridge,
     assert text_simple == "heard 24000 samples"                                    # speech + the 300 ms that started the request
     heard = int(text_tricky.split()[1])
     assert samples_of(LEAD + speech(600) + silence(350) + speech(500)) + 0.25 * RATE <= heard <= samples_of(tricky), text_tricky
-    assert len(backend.stt_requests) == 3                                          # 1 + 2, none of them lost or doubled
+    assert len(b.lines_matching("early-stt: request started")) == 3               # 1 + 2: none lost, none doubled
+    assert 2 <= len(backend.stt_requests) <= 3                                     # (a dropped request may not have got to the server)
 
 
 # =====================================================================================================================

@@ -16,7 +16,7 @@ from pathlib import Path
 
 import wyoming_openai_hazel
 from stubs import StubBackend
-from wyoming_client import WyomingClient
+from wyoming_client import WyomingClient, silence, speech
 
 START_TIMEOUT_S = 40.0        # a busy CI machine can take a while to import everything
 STOP_TIMEOUT_S = 10.0
@@ -171,13 +171,37 @@ class BridgeFactory:
         self.started.append(bridge)
         return bridge
 
-    async def __call__(self, *, args: list[str] | None = None, wait: bool = True, allow_errors: bool = False,
+    async def __call__(self, *, args: list[str] | None = None, wait: bool = True, allow_errors: bool = False, warm: bool = False,
                        **overrides: str | None) -> Bridge:
-        """Start a bridge. Keyword arguments are environment variables (``None`` removes one): ``HAZEL_STT_EARLY="1"``."""
+        """Start a bridge. Keyword arguments are environment variables (``None`` removes one): ``HAZEL_STT_EARLY="1"``.
+
+        ``warm=True`` also sends one throw-away request of each kind first (see ``warm_up``).
+        """
         bridge = await self._spawn(args, overrides, allow_errors)
         if wait:
             await bridge.wait_until_ready()
+            if warm:
+                await self.warm_up(bridge)
         return bridge
+
+    async def warm_up(self, bridge: Bridge) -> None:
+        """One throw-away request of each kind, so the first request a test measures does not also pay for the bridge's lazy
+        imports and connection set-up - on a busy machine that can take longer than the margins of the timing tests.
+
+        The stub is put back exactly as it was (settings and records), whatever the test had prepared.
+        """
+        backend = self.backend
+        settings = ("stt_delay_s", "stt_fail_first", "n_chunks", "chunk_delay_s")
+        saved = {name: getattr(backend, name) for name in settings}
+        backend.stt_delay_s, backend.stt_fail_first, backend.n_chunks, backend.chunk_delay_s = 0.0, 0, 1, 0.0
+        try:
+            client = bridge.client()
+            await client.transcribe(speech(300) + silence(200), realtime=False)    # too little silence to start an early request
+            await client.synthesize("Warming up. One more sentence.")
+        finally:
+            backend.reset()
+            for name, value in saved.items():
+                setattr(backend, name, value)
 
     async def run_to_exit(self, *, args: list[str] | None = None, timeout: float = 60.0,
                           **overrides: str | None) -> tuple[int, str]:
