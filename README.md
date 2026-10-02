@@ -82,21 +82,30 @@ The test suite starts the **real container entry point** against stub speech ser
 
 ## What we measured
 
-On one home server (an Unraid box with a shared Tesla P40, Whisper large-v3-turbo and Kokoro, host load 28 to 50, 20 to 24 interleaved trials per condition through Home Assistant's own pipeline API), compared with the stock bridge:
+One home server: an Unraid box with a shared Tesla P40, Whisper large-v3-turbo (whisper.cpp behind llama-swap) and Kokoro. All numbers are medians of interleaved trials (the arms alternate in random order so the server's mood affects them equally); the host was busy (load 12 to 26), so the slowest trials are noisy.
 
-* speech-to-text after Home Assistant's end-of-speech wait: about 0.4 to 0.7 s down to about 0.002 s;
-* time to first sound of a 4-sentence reply (90th percentile): 1.64 s down to 0.33 s with `HAZEL_TTS_CONCURRENCY=1`;
-* first request after the GPU slept: the extra 0.2 to 0.6 s is gone with the wake-up hook.
+| What | Stock bridge | With the extras | How |
+|---|---|---|---|
+| Speech-to-text, time from Home Assistant's "command finished" to the transcript | 0.41 s (90th percentile 0.60 s) | 0.001 s (90th percentile 0.002 s) | `HAZEL_STT_EARLY=1`, 30 trials each, real-time audio with Home Assistant's 0.7 s silence tail, identical transcripts in 30 of 30 |
+| Same, replayed with the original project's own code from the pull request ([#94](https://github.com/roryeckel/wyoming_openai/pull/94)) | 0.40 s | 0.001 s typical; 6 of 30 trials were slower (0.4 to 2.6 s) while the shared graphics card was busy with other jobs, and the stock arm had slow trials too | 30 trials each |
+| Accuracy: recordings of 44 commands that contain household names (264 recordings) | 249 of 264 exact | 248 of 264 exact; 263 of the 264 transcripts word for word the same ("night light" against "nightlight" is the one difference) | exact = same words as the sentence that was spoken |
+| Accuracy: 264 recordings of everyday commands | 237 of 264 exact | 237 of 264 exact, all 264 transcripts the same | same method |
+| First sound of a 4-sentence reply, 90th percentile | 1.64 s | 0.33 s | `HAZEL_TTS_CONCURRENCY=1` on a busy speech server |
+| First request after the graphics card slept | about 0.6 s extra | gone | `HAZEL_GPU_WAKE_FILE` with a small helper on the GPU host |
 
-These are one household's numbers, not a promise.
+Home Assistant itself waits about 0.7 s of silence before it says "finished"; none of this can shorten that wait. These are one household's numbers, not a promise.
 
 ## Upstream
 
-The general-purpose extras (early transcription, sentence concurrency, voice display names) are offered to the original project as small, separate pull requests; links are added here when they are open. The GPU wake-up hook is specific to our setup and stays here.
+The general-purpose extras are offered to the original project as separate, small pull requests, so that one day this image may not be needed. Nothing here depends on them being accepted.
 
-## Licence
+| Extra | Link | State |
+|---|---|---|
+| Early transcription | [issue #93](https://github.com/roryeckel/wyoming_openai/issues/93) and [pull request #94](https://github.com/roryeckel/wyoming_openai/pull/94) | draft, waiting for the maintainer's view (it is the largest of the three) |
+| Sentence concurrency | [pull request #95](https://github.com/roryeckel/wyoming_openai/pull/95) | open |
+| Voice display names | [pull request #96](https://github.com/roryeckel/wyoming_openai/pull/96) | open |
 
-Apache License 2.0, the same as the project it builds on. See [LICENSE](LICENSE) and [NOTICE.md](NOTICE.md).
+The GPU wake-up hook is specific to our setup and stays here.
 
 ## Build it yourself
 
@@ -107,3 +116,7 @@ docker build --build-arg UPSTREAM_VERSION=$(cat upstream.version) -t wyoming-ope
 ```
 
 `upstream.version` is the one place that says which upstream release we are built on; there is deliberately no default in the Dockerfile.
+
+## Licence
+
+Apache License 2.0, the same as the project it builds on. See [LICENSE](LICENSE) and [NOTICE.md](NOTICE.md).
