@@ -1,0 +1,44 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>wyoming-openai-hazel</Name>
+  <Repository>ghcr.io/nphil/wyoming-openai-hazel:latest</Repository>
+  <Registry>https://github.com/nphil/wyoming-openai-hazel/pkgs/container/wyoming-openai-hazel</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/nphil/wyoming-openai-hazel/issues</Support>
+  <Project>https://github.com/nphil/wyoming-openai-hazel</Project>
+  <Overview>Wyoming bridge for Home Assistant voice: speech-to-text and text-to-speech from any OpenAI-compatible server (Whisper, Kokoro, ...). This is roryeckel/wyoming_openai plus tested, optional extras: early transcription (answer ready when Home Assistant decides you are done), sentence concurrency, voice display names and a GPU wake-up hook. Add it in Home Assistant with Settings &gt; Devices &amp; services &gt; Add integration &gt; Wyoming Protocol, port 10300. Raw TCP, no web page, no authentication: keep it on your LAN. New versions are published only after all tests pass, so the Docker tab shows 'update ready' only for tested releases.</Overview>
+  <Category>HomeAutomation: Tools:</Category>
+  <WebUI/>
+  <TemplateURL>https://raw.githubusercontent.com/nphil/wyoming-openai-hazel/main/unraid/wyoming-openai-hazel.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/nphil/wyoming-openai-hazel/main/assets/icon-512.png</Icon>
+  <ExtraParams>--restart=unless-stopped</ExtraParams>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled>1790966389</DateInstalled>
+  <DonateText/>
+  <DonateLink/>
+  <Requires>An OpenAI-compatible speech-to-text server and text-to-speech server (for example Whisper behind llama-swap and Kokoro-FastAPI).</Requires>
+  <Config Name="Wyoming port" Target="10300" Default="10300" Mode="tcp" Description="Wyoming protocol (raw TCP). Home Assistant connects here: Settings &gt; Devices &amp; services &gt; Add integration &gt; Wyoming Protocol." Type="Port" Display="always" Required="true" Mask="false">10300</Config>
+  <Config Name="STT_OPENAI_URL" Target="STT_OPENAI_URL" Default="http://YOUR-SERVER:9292/v1" Mode="" Description="OpenAI-compatible speech-to-text server (Whisper behind llama-swap, Speaches, ...). Ends in /v1." Type="Variable" Display="always" Required="true" Mask="false">http://YOUR-SERVER:9292/v1</Config>
+  <Config Name="STT_MODELS" Target="STT_MODELS" Default="whisper-1" Mode="" Description="Model id(s) the server lists, space separated." Type="Variable" Display="always" Required="true" Mask="false">whisper-1</Config>
+  <Config Name="STT_BACKEND" Target="STT_BACKEND" Default="OPENAI" Mode="" Description="OPENAI is right for llama-swap and most servers; leave empty to auto-detect." Type="Variable" Display="advanced" Required="false" Mask="false">OPENAI</Config>
+  <Config Name="STT_EXTRA_BODY" Target="STT_EXTRA_BODY" Default="" Mode="" Description="Extra fields added to every transcription request, as JSON. Example: {&quot;prompt&quot;: &quot;Home Assistant commands. Kitchen, Poobot, BedJet&quot;} makes Whisper spell your device names right." Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
+  <Config Name="TTS_OPENAI_URL" Target="TTS_OPENAI_URL" Default="http://YOUR-SERVER:8880/v1" Mode="" Description="OpenAI-compatible text-to-speech server (Kokoro-FastAPI, Speaches, ...). Ends in /v1." Type="Variable" Display="always" Required="true" Mask="false">http://YOUR-SERVER:8880/v1</Config>
+  <Config Name="TTS_MODELS" Target="TTS_MODELS" Default="kokoro" Mode="" Description="Model id(s), space separated." Type="Variable" Display="always" Required="true" Mask="false">kokoro</Config>
+  <Config Name="TTS_STREAMING_MODELS" Target="TTS_STREAMING_MODELS" Default="kokoro" Mode="" Description="Models that stream audio while they synthesize (reply starts after the first sentence)." Type="Variable" Display="advanced" Required="false" Mask="false">kokoro</Config>
+  <Config Name="TTS_VOICES" Target="TTS_VOICES" Default="af_heart" Mode="" Description="Voices offered to Home Assistant, space separated." Type="Variable" Display="always" Required="true" Mask="false">af_heart</Config>
+  <Config Name="TTS_BACKEND" Target="TTS_BACKEND" Default="KOKORO_FASTAPI" Mode="" Description="KOKORO_FASTAPI, OPENAI, SPEACHES or LOCALAI." Type="Variable" Display="advanced" Required="false" Mask="false">KOKORO_FASTAPI</Config>
+  <Config Name="TTS_SPEED" Target="TTS_SPEED" Default="" Mode="" Description="Speaking speed for every voice (0.25 to 4.0). Empty = the server's default." Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
+  <Config Name="WYOMING_LANGUAGES" Target="WYOMING_LANGUAGES" Default="en" Mode="" Description="Languages offered to Home Assistant, space separated." Type="Variable" Display="advanced" Required="false" Mask="false">en</Config>
+  <Config Name="WYOMING_LOG_LEVEL" Target="WYOMING_LOG_LEVEL" Default="INFO" Mode="" Description="DEBUG logs every audio chunk." Type="Variable" Display="advanced" Required="false" Mask="false">INFO</Config>
+  <Config Name="HAZEL_STT_EARLY" Target="HAZEL_STT_EARLY" Default="0" Mode="" Description="1 = start transcribing as soon as you pause for 0.3 s, so the answer is ready when Home Assistant decides you are done." Type="Variable" Display="advanced" Required="false" Mask="false">0</Config>
+  <Config Name="HAZEL_STT_EARLY_SILENCE_MS" Target="HAZEL_STT_EARLY_SILENCE_MS" Default="300" Mode="" Description="Silence after speech that starts the early request." Type="Variable" Display="advanced" Required="false" Mask="false">300</Config>
+  <Config Name="HAZEL_TTS_CONCURRENCY" Target="HAZEL_TTS_CONCURRENCY" Default="" Mode="" Description="Sentences synthesized at the same time (empty = the original bridge's 3). 1 gets the first sentence to your ears soonest on a busy speech server." Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
+  <Config Name="HAZEL_TTS_VOICE_LABELS" Target="HAZEL_TTS_VOICE_LABELS" Default="" Mode="" Description="Display names in Home Assistant's voice picker, id=Name;id2=Name2. Example: af_hazel=Hazel" Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
+  <Config Name="HAZEL_GPU_WAKE_FILE" Target="HAZEL_GPU_WAKE_FILE" Default="" Mode="" Description="File to touch when a speech request starts (a helper on the GPU host can wake a sleeping card with it). Empty = off." Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
+  <Config Name="HAZEL_LOG_TIMING" Target="HAZEL_LOG_TIMING" Default="1" Mode="" Description="Log how long speech-to-text and the first sound took." Type="Variable" Display="advanced" Required="false" Mask="false">1</Config>
+  <Config Name="TZ" Target="TZ" Default="America/New_York" Mode="" Description="Time zone for log lines." Type="Variable" Display="advanced" Required="false" Mask="false">America/New_York</Config>
+</Container>
