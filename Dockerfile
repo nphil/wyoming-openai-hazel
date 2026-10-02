@@ -1,4 +1,5 @@
 # syntax=docker/dockerfile:1
+# check=skip=InvalidDefaultArgInFrom
 # wyoming-openai-hazel = the upstream bridge image + our package. Nothing of upstream is copied or edited.
 #
 # The upstream version is NOT defaulted here on purpose: the single source of truth is the file `upstream.version`
