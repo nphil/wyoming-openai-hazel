@@ -272,18 +272,20 @@ def test_check_of_only_the_upstream_checks_its_shape(capsys):
     assert run_cli(capsys, "check", "--upstream", "v0.7.0")[0] == 1
 
 
-def test_on_github_a_refusal_becomes_a_one_line_error_annotation(capsys, monkeypatch):
+def test_on_github_a_refusal_is_a_one_line_error_annotation_on_stderr(capsys, monkeypatch):
+    # The workflows run `decision="$(hazel_version.py decide ...)"`: whatever goes to standard OUTPUT is captured by the
+    # shell and never shown, so the reason for a refusal must travel on standard ERROR.
     monkeypatch.setenv("GITHUB_ACTIONS", "true")
     code, out, err = run_cli(capsys, "check", "--version", "0.7.0-hazel.1\n")
-    assert code == 1 and err == ""
-    assert out.startswith("::error title=Version check::") and "0.7.0-hazel.1" in out
-    assert out.count("\n") == 1          # one log command, even though the typed-in version contained a newline
+    assert code == 1 and out == ""
+    assert err.startswith("::error title=Version check::") and "0.7.0-hazel.1" in err
+    assert err.count("\n") == 1          # one log command, even though the typed-in version contained a newline
 
 
 def test_annotation_text_cannot_start_another_log_command(capsys, monkeypatch):
     monkeypatch.setenv("GITHUB_ACTIONS", "true")
     hv.report_error("first\n::set-output name=x::y\r100%", title="T")
-    assert capsys.readouterr().out == "::error title=T::first%0A::set-output name=x::y%0D100%25\n"
+    assert capsys.readouterr().err == "::error title=T::first%0A::set-output name=x::y%0D100%25\n"
 
 
 # --- release notes ---------------------------------------------------------------------------------------------------

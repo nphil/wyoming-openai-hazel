@@ -210,9 +210,12 @@ def _annotation_escape(text: str) -> str:
 
 
 def report_error(message: str, title: str = "Version check") -> None:
-    """On GitHub Actions an ``::error`` line also shows up on the run's summary page, not only in the step log."""
+    """Say why we refused, on standard ERROR (the workflows capture standard output with ``$(...)``, which would swallow it).
+
+    On GitHub Actions the ``::error`` form also puts the message on the run's summary page, not only in the step log.
+    """
     if os.environ.get("GITHUB_ACTIONS") == "true":
-        print(f"::error title={title}::{_annotation_escape(message)}")
+        print(f"::error title={title}::{_annotation_escape(message)}", file=sys.stderr)
     else:
         print(f"error: {message}", file=sys.stderr)
 
