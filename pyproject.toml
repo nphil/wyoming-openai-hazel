@@ -1,0 +1,13 @@
+[project]
+name = "wyoming-openai-hazel"
+version = "0.0.0"
+description = "Opt-in extras for the wyoming_openai bridge (early transcription, GPU wake hook, TTS concurrency, voice display names)"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+dependencies = []   # provided by the upstream base image: wyoming, openai, wyoming_openai
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["src", "tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
