@@ -7,6 +7,10 @@ the finished (or nearly finished) answer is used - the answer is ready when Home
 early answer is thrown away and the normal request runs exactly as upstream would run it, so the text can only differ from the
 stock bridge for sounds quieter than the silence threshold (see detector.py).
 
+A slow early request is never given up on: it is the one request this utterance needs, the stock bridge would wait for its own
+request just as long, and sending the same audio again would only queue behind it on a busy speech server. Only an early request
+that FAILED is replaced by the normal request.
+
 ``EarlyStt`` is the per-connection controller (pure asyncio, testable with a fake request function) and ``EarlyClient`` is a
 thin stand-in for the OpenAI client that hands the early answer to upstream's own code at ``audio-stop``.
 """
@@ -35,12 +39,11 @@ class Taken:
 
 class EarlyStt:
     def __init__(self, *, request: Callable[[bytes, AudioFormat], Awaitable[Any]], silence_ms: float = 300.0,
-                 min_speech_ms: float = 250.0, resume_ms: float = 100.0, max_passes: int = 3, timeout_s: float = 8.0,
+                 min_speech_ms: float = 250.0, resume_ms: float = 100.0, max_passes: int = 3,
                  clock: Callable[[], float] = time.perf_counter) -> None:
         self._request = request
         self._detector = EndpointDetector(silence_ms=silence_ms, min_speech_ms=min_speech_ms, resume_ms=resume_ms,
                                           max_passes=max_passes)
-        self.timeout_s = timeout_s
         self._clock = clock
         self._active = False
         self._fmt: AudioFormat = (16000, 2, 1)
@@ -116,10 +119,12 @@ class _Transcriptions:
         if taken is not None:
             state = "already finished" if taken.task.done() else "still running"
             try:
-                result = await asyncio.wait_for(asyncio.shield(taken.task), self._early.timeout_s)
-            except Exception as exc:   # the early request failed, or took longer than timeout_s
-                taken.task.cancel()   # one we give up on must not keep occupying the speech server (no-op if it already failed)
-                _LOGGER.warning("early-stt: early answer unusable (%r) - transcribing normally", exc)
+                # No time limit and no shield: a request that is merely slow is waited for. The stock bridge would wait just as
+                # long for its own request, and a second request for the same audio would only queue behind this one on a busy
+                # speech server. If this handler is cancelled, asyncio cancels the awaited request with it: nothing is orphaned.
+                result = await taken.task
+            except Exception as exc:   # the early request FAILED - only then is the normal request sent instead
+                _LOGGER.warning("early-stt: early request failed (%r) - transcribing normally", exc)
             else:
                 _LOGGER.info("early-stt: used the early answer (request began %.0f ms before audio-stop, %s)",
                              taken.lead_ms, state)

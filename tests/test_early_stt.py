@@ -144,7 +144,7 @@ async def test_when_the_early_request_fails_the_normal_request_still_delivers(br
     assert answered[0].arrived >= stamps.audio_stop_sent, "the answer should come from the normal request, sent at audio-stop"
     assert answered[0].pcm == FULL
     assert text == f"heard {samples_of(FULL)} samples"
-    await b.wait_for_log("early-stt: early answer unusable")
+    await b.wait_for_log("early-stt: early request failed")
 
 
 async def test_a_server_error_that_the_sdk_retries_is_invisible(bridge, backend) -> None:
@@ -155,7 +155,22 @@ async def test_a_server_error_that_the_sdk_retries_is_invisible(bridge, backend)
     assert len(backend.stt_requests) == 2 and len(answered) == 1
     assert answered[0].samples < samples_of(FULL), "the answer should come from the early request"
     assert text == f"heard {answered[0].samples} samples"
-    assert not b.lines_matching("early answer unusable")
+    assert not b.lines_matching("early request failed")
+
+
+async def test_a_slow_early_request_is_waited_for_and_never_repeated(bridge, backend) -> None:
+    """A busy speech server answers slowly. Sending the same audio a second time would only queue behind the first request."""
+    backend.stt_delay_s = 11.0        # longer than the 8 s after which release 0.7.0-hazel.1 gave up on an early request
+    b = await bridge(warm=True, HAZEL_STT_EARLY="1")
+    text, stamps = await b.client().transcribe(FULL)
+
+    (request,) = backend.stt_requests                          # exactly ONE request for this utterance
+    assert request.arrived < stamps.audio_stop_sent - 0.3, "the one request should be the early one"
+    assert request.answered is not None and not request.hung_up, "the early request was abandoned before it was answered"
+    assert text == f"heard {request.samples} samples"
+    assert stamps.latency_s < backend.stt_delay_s, "the bridge started over instead of waiting for the early request"
+    assert not b.lines_matching("early request failed")
+    await b.wait_for_log("early-stt: used the early answer")
 
 
 async def test_the_early_request_carries_exactly_the_settings_the_normal_request_would(bridge, backend) -> None:
@@ -537,10 +552,12 @@ async def test_the_client_returns_the_early_answer_without_asking_upstream_again
 
 
 async def test_the_client_waits_for_a_request_that_is_still_running() -> None:
-    client, real, _ = await launched_client(Request(answer="EARLY", delay=0.2))
+    request = Request(answer="EARLY", delay=0.5)
+    client, real, _ = await launched_client(request)
     started = asyncio.get_running_loop().time()
     assert await client.audio.transcriptions.create(file=None, model="whisper-1") == "EARLY"
-    assert asyncio.get_running_loop().time() - started >= 0.1 and real.transcriptions.calls == []
+    assert asyncio.get_running_loop().time() - started >= 0.1                      # it really had to wait
+    assert real.transcriptions.calls == [] and len(request.calls) == 1 and request.cancelled == 0      # and did not start over
 
 
 async def test_the_client_falls_back_to_the_normal_request_when_the_early_one_failed() -> None:
@@ -550,14 +567,19 @@ async def test_the_client_falls_back_to_the_normal_request_when_the_early_one_fa
     assert real.transcriptions.calls == [{"file": "the wav", "model": "whisper-1", "prompt": "p"}]
 
 
-async def test_the_client_gives_up_on_an_early_request_that_takes_too_long() -> None:
+async def test_cancelling_the_wait_cancels_the_early_request_too() -> None:
+    """If the bridge is stopped while it waits for a slow early answer, that request must not be left running."""
     request = Request(delay=30)
-    client, real, early = await launched_client(request, timeout_s=0.05)
-    result = await client.audio.transcriptions.create(file="the wav", model="whisper-1")
-    assert result.text == "from the normal request" and len(real.transcriptions.calls) == 1
-    early.end()
-    await asyncio.sleep(0.01)
-    assert request.cancelled == 1, "the slow early request must not keep running"
+    client, real, _ = await launched_client(request)
+    waiting = asyncio.ensure_future(client.audio.transcriptions.create(file="the wav", model="whisper-1"))
+    await asyncio.sleep(0.05)                                     # it is now waiting for the early answer
+    assert not waiting.done() and request.cancelled == 0
+    waiting.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiting
+    await asyncio.sleep(0.05)
+    assert request.cancelled == 1, "the early request kept running after the wait was cancelled"
+    assert real.transcriptions.calls == [], "a cancelled wait must not send a replacement request"
 
 
 async def test_the_client_uses_the_normal_request_when_no_early_one_exists() -> None:
@@ -624,6 +646,43 @@ async def test_the_early_request_is_built_exactly_like_upstreams_own_request() -
     assert normal_wav == stock.transcriptions.wav[0]
     assert early_wav != normal_wav and len(early_wav) < len(normal_wav)
     assert transcripts(mine_handler) == transcripts(stock_handler) == ["hello"]
+
+
+async def test_stopping_the_handler_while_it_waits_for_a_slow_early_answer_leaves_nothing_running() -> None:
+    """The bridge is shut down (or the connection is torn down) while the speech server is still busy with the early request."""
+    fake = FakeSttClient("hello")
+    early_request_cancelled = []
+
+    async def very_slow_create(**kwargs):
+        fake.transcriptions.calls.append(kwargs)
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            early_request_cancelled.append(True)
+            raise
+
+    fake.transcriptions.create = very_slow_create
+    handler = build_handler(EARLY_ON, stt_client=fake)
+    tasks_before = asyncio.all_tasks()
+    await handler.handle_event(Transcribe(language="en").event())
+    await handler.handle_event(AudioStart(rate=RATE, width=2, channels=1).event())
+    for chunk in chunked(FULL):
+        await handler.handle_event(AudioChunk(rate=RATE, width=2, channels=1, audio=chunk).event())
+        await asyncio.sleep(0)
+    assert len(fake.transcriptions.calls) == 1, "the early request should be out by now"
+
+    stopping = asyncio.ensure_future(handler.handle_event(AudioStop().event()))
+    await asyncio.sleep(0.05)
+    assert not stopping.done(), "the handler should be waiting for the slow early answer"
+    stopping.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await stopping
+    await asyncio.sleep(0.05)
+
+    assert early_request_cancelled == [True], "the early request kept running after the handler was cancelled"
+    assert len(fake.transcriptions.calls) == 1, "a cancelled handler must not send a replacement request"
+    assert transcripts(handler) == []
+    assert not (asyncio.all_tasks() - tasks_before), "a task is still running"
 
 
 @pytest.mark.parametrize(("streaming_models", "extra_body", "early_expected"), [
