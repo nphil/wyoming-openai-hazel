@@ -43,7 +43,7 @@ jobs:
       version: ${{ steps.decide.outputs.version }}
       notes: ${{ steps.notes.outputs.notes }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Ask GitHub for the newest wyoming_openai release
         id: upstream
@@ -155,7 +155,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: main
 

@@ -89,7 +89,7 @@ jobs:
       publish: ${{ steps.plan.outputs.publish }}
       image: ${{ steps.plan.outputs.image }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Check the inputs and decide what this run does
         id: plan
@@ -148,12 +148,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       - name: Run the tests inside the upstream image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           target: test
@@ -172,15 +172,15 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       # Only used for the list of image tags. `latest` is in the list only when this run really publishes, so it can
       # never move on a dry run or a build-only run.
       - name: Work out the image tags
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ needs.plan.outputs.image }}
           flavor: latest=false
@@ -191,7 +191,7 @@ jobs:
       # Loaded into the runner's own Docker (not pushed yet) so it can be started and tested first. The version and source
       # labels come from the Dockerfile (VERSION build argument); they are what Unraid's ShipLog uses to find the release notes.
       - name: Build the image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           target: final
@@ -209,7 +209,7 @@ jobs:
             type=gha,scope=test-${{ needs.plan.outputs.upstream }}
           cache-to: type=gha,mode=max,ignore-error=true,scope=final-${{ needs.plan.outputs.upstream }}
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
@@ -221,7 +221,7 @@ jobs:
 
       - name: Log in to the GitHub container registry
         if: needs.plan.outputs.publish == 'true'
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -306,7 +306,7 @@ jobs:
 
       # The tag is created on the exact commit that was tested and built, not on whatever main is by now.
       - name: Publish the GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{ needs.plan.outputs.version }}
           target_commitish: ${{ github.sha }}

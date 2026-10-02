@@ -36,7 +36,7 @@ jobs:
         # (when we decide to stop supporting the old release).
         upstream: [current, '0.6.1']
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Pick the upstream version for this leg
         id: up
@@ -51,12 +51,12 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "Running the tests inside ghcr.io/roryeckel/wyoming_openai:$version" | tee -a "$GITHUB_STEP_SUMMARY"
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       # `--target test` makes the build run pytest as its last step; if any test fails, this step fails.
       # Nothing is loaded or pushed (cacheonly): the image is only a vehicle for running the tests.
       - name: Run the tests inside the upstream image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           target: test
