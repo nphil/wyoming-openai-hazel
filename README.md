@@ -97,3 +97,13 @@ The general-purpose extras (early transcription, sentence concurrency, voice dis
 ## Licence
 
 Apache License 2.0, the same as the project it builds on. See [LICENSE](LICENSE) and [NOTICE.md](NOTICE.md).
+
+## Build it yourself
+
+```bash
+git clone https://github.com/nphil/wyoming-openai-hazel && cd wyoming-openai-hazel
+docker build --build-arg UPSTREAM_VERSION=$(cat upstream.version) --target test .    # runs every test inside the upstream image
+docker build --build-arg UPSTREAM_VERSION=$(cat upstream.version) -t wyoming-openai-hazel .
+```
+
+`upstream.version` is the one place that says which upstream release we are built on; there is deliberately no default in the Dockerfile.

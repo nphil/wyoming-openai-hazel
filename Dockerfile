@@ -1,6 +1,10 @@
 # syntax=docker/dockerfile:1
 # wyoming-openai-hazel = the upstream bridge image + our package. Nothing of upstream is copied or edited.
-ARG UPSTREAM_VERSION=0.7.0
+#
+# The upstream version is NOT defaulted here on purpose: the single source of truth is the file `upstream.version`
+# (the daily watcher edits it), and a default in this file would silently go stale after the first automatic bump.
+#   docker build --build-arg UPSTREAM_VERSION=$(cat upstream.version) -t wyoming-openai-hazel .
+ARG UPSTREAM_VERSION
 
 FROM ghcr.io/roryeckel/wyoming_openai:${UPSTREAM_VERSION} AS base
 COPY src/wyoming_openai_hazel /opt/hazel/wyoming_openai_hazel
@@ -13,6 +17,7 @@ COPY requirements-dev.txt /tmp/requirements-dev.txt
 RUN pip install --no-cache-dir -r /tmp/requirements-dev.txt
 COPY pyproject.toml /opt/hazel-tests/pyproject.toml
 COPY tests /opt/hazel-tests/tests
+COPY scripts /opt/hazel-tests/scripts
 WORKDIR /opt/hazel-tests
 RUN python -m pytest -q -p no:cacheprovider
 
