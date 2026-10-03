@@ -6,7 +6,7 @@
 
 *In plain words:* Home Assistant talks to speech programs through a protocol called Wyoming. If your speech-to-text (for example Whisper) and text-to-speech (for example Kokoro) programs speak the "OpenAI API" instead, you need a translator in the middle. That translator is `wyoming_openai`, written by Rory Eckel. This project is that same translator, plus a handful of **optional extras** that each save a fraction of a second, plus an automatic build system that only publishes a new version after all tests pass.
 
-Nothing of the original is copied or edited: our container is built *on top of* the original container and adds one small Python package. See [NOTICE.md](NOTICE.md).
+Nothing of the original is copied or edited: our container is built *on top of* the original container and adds one small Python package (plus one library, `paho-mqtt`, for the optional Home Assistant on/off sensor). See [NOTICE.md](NOTICE.md).
 
 ## What the extras do
 
@@ -18,6 +18,7 @@ All extras are **off unless you switch them on** with an environment variable. T
 | **GPU wake-up hook** | Touches a file when a voice request starts. A small program on the GPU host can watch that file and wake a sleeping graphics card before the audio arrives. | Removes the "first request after the card slept" delay | `HAZEL_GPU_WAKE_FILE=/wake/wake` |
 | **Sentence concurrency** | Lets you choose how many sentences of a reply are synthesized at the same time (the original always uses 3). One at a time gets the *first* sentence to your ears sooner on a busy speech server. | Faster first sound on multi-sentence replies | `HAZEL_TTS_CONCURRENCY=1` |
 | **Voice display names** | Shows `Hazel` in Home Assistant's voice picker while the id sent to the speech server stays `af_hazel`. | Friendly names for blended or custom voices | `HAZEL_TTS_VOICE_LABELS="af_hazel=Hazel"` |
+| **Home Assistant on/off sensor** | Tells Home Assistant over MQTT whether this bridge is running: one sensor that is **on** while the bridge answers and **off** when it does not, when the container is stopped or has crashed, and when the whole machine has lost power. See [Home Assistant on/off sensor (MQTT)](#home-assistant-onoff-sensor-mqtt). | Lets Home Assistant switch to a backup voice engine exactly when the bridge is really gone | `HAZEL_MQTT_HOST=192.168.1.146` |
 | **Timing log** | Writes how long speech-to-text and the first sound took. | Lets you see what is slow | `HAZEL_LOG_TIMING=1` (default on) |
 
 Streaming (Home Assistant hearing the first sentence while later ones are still being made) and the `STT_EXTRA_BODY` setting (for example a Whisper prompt with your device names) are features of the original bridge; we keep them working and test them.
@@ -62,12 +63,41 @@ All the original bridge's settings (`STT_*`, `TTS_*`, `WYOMING_*`) work exactly 
 | `HAZEL_TTS_CONCURRENCY` | upstream's `3` | Sentences synthesized at once |
 | `HAZEL_TTS_VOICE_LABELS` | empty | `id=Name;id2=Name2` display names for the voice picker |
 | `HAZEL_LOG_TIMING` | `1` | Timing lines in the log |
+| `HAZEL_MQTT_HOST` | empty (off) | Address of the MQTT broker (Home Assistant's Mosquitto). Setting it switches the on/off sensor on |
+| `HAZEL_MQTT_PORT` | `1883` | Port of the broker (plain MQTT, no TLS) |
+| `HAZEL_MQTT_USER` | empty | Broker user name the sensor logs in with (needed when the broker asks for one; never written to the log) |
+| `HAZEL_MQTT_PASSWORD` | empty | That user's password (never written to the log) |
+| `HAZEL_MQTT_ID` | `main` | Name of this bridge in the MQTT topics and in the sensor's id: letters, digits, `_` and `-`. Two bridges on one broker need different ones |
+| `HAZEL_MQTT_NAME` | `Hazel voice bridge` | Name of the device in Home Assistant |
+| `HAZEL_MQTT_DISCOVERY_PREFIX` | `homeassistant` | Home Assistant's MQTT discovery prefix (only change it if you changed it in Home Assistant) |
+| `HAZEL_MQTT_KEEPALIVE` | `20` | Seconds of silence after which the broker decides the bridge is gone (minimum 5). A power cut shows as "off" after 1.5 times this |
+| `HAZEL_MQTT_CHECK_SECONDS` | `10` | Seconds between the bridge's checks of itself (minimum 2; never more than half of the keep-alive) |
 
 A value that cannot be understood is reported in the log and the default is used, so a typo cannot stop the bridge. If the extras cannot be installed at all (for example a future upstream release changed something we rely on), the container starts the **stock** bridge and says so loudly in its log.
 
 ### Unraid
 
 A ready template is in [`unraid/wyoming-openai-hazel.xml`](unraid/wyoming-openai-hazel.xml) (icon, labels, restart policy, all settings above). The image carries a real version label and GitHub releases, so Unraid's Docker tab shows **update ready** only for versions that passed the tests.
+
+## Home Assistant on/off sensor (MQTT)
+
+*In plain words:* the bridge can tell Home Assistant "I am running" in a way Home Assistant understands without any configuration, so an automation (for example "use the backup voice engine on the CPU while the bridge is down") has one clean thing to look at. It is off unless you set `HAZEL_MQTT_HOST`.
+
+**What shows up in Home Assistant:** one device, **Hazel voice bridge**, with one sensor, **Running** (usually `binary_sensor.hazel_voice_bridge_running`). It is **on** while the bridge answers and **off** when it does not. It is never "unavailable": a bridge that is gone is simply off.
+
+**What "off" means:** the bridge does not answer, or its process is gone, or the whole machine is. If the process is still alive, the bridge notices by itself: every `HAZEL_MQTT_CHECK_SECONDS` (10 by default) it asks its own Wyoming port for its `info`, which is the question Home Assistant asks too, and it says "off" after two misses in a row and "on" again at the first answer. Right after a start it checks every 2 seconds until the first answer, and only then says "on". If the process or the machine is gone, the bridge cannot say anything any more, so **the MQTT broker says it for the bridge**: when the bridge connects, it hands the broker a note, the MQTT *Last Will*: "if I vanish without saying goodbye, publish *off*". A stopped container, a crash and a power cut all end the connection without a goodbye. The first two show up as "off" at once; after a power cut the broker waits for the keep-alive to run out first (30 seconds with the default).
+
+That is also why **the bridge never says goodbye** when it stops: a polite MQTT goodbye makes the broker throw the note away, and the sensor would stay "on". The process just ends and the broker does the rest.
+
+**What you need:** Home Assistant's MQTT integration with a broker (the Mosquitto add-on) and **a Mosquitto user for the bridge**, a user name and password that the broker accepts. With the Mosquitto add-on that is a normal Home Assistant user; give the bridge its own, a user without administrator rights is enough. Then:
+
+```bash
+-e HAZEL_MQTT_HOST=192.168.1.146 -e HAZEL_MQTT_USER=hazel-bridge -e HAZEL_MQTT_PASSWORD=the-password
+```
+
+Home Assistant creates the sensor by itself (MQTT discovery) the moment the bridge connects; there is nothing to set up there. Plain MQTT on port 1883 is used, without encryption: keep it on your home network. The bridge asks `127.0.0.1` at the port of `WYOMING_URI` (10300 unless you changed it), so leave the bridge listening on all addresses, which is the default.
+
+**It can never hurt the bridge.** With no `HAZEL_MQTT_HOST` the MQTT library is not even loaded. With it, everything runs on background threads: a wrong password, a broker that is down or one that restarts is written to the log once (then at most once a minute) and retried for ever, and the bridge keeps answering Home Assistant meanwhile. The password and the user name are never written to the log, not even at `DEBUG`. If the sensor itself cannot start, the log says so loudly and the bridge starts anyway.
 
 ## How versions and updates work
 
@@ -78,7 +108,7 @@ A ready template is in [`unraid/wyoming-openai-hazel.xml`](unraid/wyoming-openai
 
 ## How it is tested
 
-The test suite starts the **real container entry point** against stub speech servers and talks to it exactly like Home Assistant does (Wyoming protocol over TCP). There is a test for every extra, for streaming (first audio chunk arrives before synthesis ends), for `STT_EXTRA_BODY` reaching both the normal and the early request, an end-to-end conversation, and a *canary* that fails the moment upstream changes something this package relies on. The same suite runs on the current and on the previous upstream version. See `tests/`.
+The test suite starts the **real container entry point** against stub speech servers and talks to it exactly like Home Assistant does (Wyoming protocol over TCP). There is a test for every extra, for streaming (first audio chunk arrives before synthesis ends), for `STT_EXTRA_BODY` reaching both the normal and the early request, an end-to-end conversation, and a *canary* that fails the moment upstream changes something this package relies on. The Home Assistant sensor is tested against a stand-in MQTT broker in the same way: the real entry point is started, killed, stopped, starved of its Wyoming port and cut off from the broker, and the test reads what the broker (and so Home Assistant) would have seen. The same suite runs on the current and on the previous upstream version. See `tests/`.
 
 ## What we measured
 
