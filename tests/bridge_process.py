@@ -114,7 +114,8 @@ class Bridge:
     def assert_clean(self) -> None:
         """No crash reports in the log - a tolerated problem would otherwise hide behind a test that still passes."""
         bad = [line for line in self.stderr_lines + self.stdout_lines
-               if TRACEBACK in line or "could not be set up" in line or "could NOT be installed" in line]
+               if TRACEBACK in line or "could not be set up" in line or "could NOT be installed" in line
+               or "could NOT be started" in line]
         assert not bad, "the bridge logged problems:\n" + "\n".join(self.stderr_lines[-200:])
 
     async def stop(self) -> None:
