@@ -3,6 +3,9 @@
 The only seam is one module attribute: ``wyoming_openai.handler.OpenAIEventHandler``. Upstream's ``__main__`` does
 ``from .handler import OpenAIEventHandler`` when it runs, so running it *after* the swap makes it build our handlers. If the
 swap cannot be done (upstream renamed something we rely on) the stock bridge is started instead and the reason is logged loudly.
+
+When ``HAZEL_MQTT_HOST`` is set, the Home Assistant on/off sensor (``beacon.py``) is started just before the bridge, whether or not
+the extras could be installed: the sensor reports the bridge, and the stock bridge is a running bridge too.
 """
 
 from __future__ import annotations
@@ -39,6 +42,22 @@ def install(config: HazelConfig) -> list[str]:
     return config.active()
 
 
+def start_beacon(config: HazelConfig) -> None:
+    """Start the opt-in MQTT status beacon. Whatever goes wrong is reported loudly and the bridge starts anyway."""
+    if not config.mqtt_host:
+        return
+    try:
+        # Upstream sets up logging a moment after this (replacing what is set here); until then the beacon's first lines would be lost.
+        logging.basicConfig(level=logging.INFO)
+        from .beacon import Beacon
+
+        Beacon(config).start()
+    except Exception as exc:
+        logging.getLogger(__name__).exception("MQTT status beacon could NOT be started (%s); the bridge runs without it", exc)
+        print(f"wyoming-openai-hazel {__version__}: MQTT BEACON NOT STARTED ({exc}); the bridge runs without it",
+              file=sys.stderr, flush=True)
+
+
 def main() -> None:
     config = HazelConfig.from_env()
     try:
@@ -52,6 +71,7 @@ def main() -> None:
         logging.getLogger(__name__).exception("Hazel extras could NOT be installed (%s); running the stock bridge", exc)
         print(f"wyoming-openai-hazel {__version__}: EXTRAS NOT INSTALLED ({exc}); running the stock bridge",
               file=sys.stderr, flush=True)
+    start_beacon(config)
     runpy.run_module("wyoming_openai", run_name="__main__", alter_sys=True)
 
 

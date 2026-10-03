@@ -1,5 +1,5 @@
-# Test-only dependencies. The runtime dependencies (wyoming, openai, wyoming_openai) come from the upstream base image,
-# so the tests run against exactly what ships. tools/smoke_test.py needs only wyoming + aiohttp.
+# Test-only dependencies. The runtime dependencies (wyoming, openai, wyoming_openai from the upstream base image, paho-mqtt from the
+# Dockerfile's `base` stage) are not listed, so the tests run against exactly what ships. tools/smoke_test.py needs only wyoming + aiohttp.
 pytest>=8.3
 pytest-asyncio>=0.24
 pytest-timeout>=2.3   # a hung test must fail the build, not hang it

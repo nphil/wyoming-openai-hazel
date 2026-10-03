@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # check=skip=InvalidDefaultArgInFrom
-# wyoming-openai-hazel = the upstream bridge image + our package. Nothing of upstream is copied or edited.
+# wyoming-openai-hazel = the upstream bridge image + our package + one extra library (paho-mqtt, see `base`). Nothing of upstream is copied or edited.
 #
 # The upstream version is NOT defaulted here on purpose: the single source of truth is the file `upstream.version`
 # (the daily watcher edits it), and a default in this file would silently go stale after the first automatic bump.
@@ -8,6 +8,10 @@
 ARG UPSTREAM_VERSION
 
 FROM ghcr.io/roryeckel/wyoming_openai:${UPSTREAM_VERSION} AS base
+# The one thing added to the upstream image: the MQTT client library of the optional Home Assistant on/off sensor (HAZEL_MQTT_HOST).
+# It is installed here, in `base`, so the test stage and the shipped image have exactly the same one. The version is pinned exactly
+# on purpose: it changes only when somebody decides it should (an unattended release must not pick up a new library by itself).
+RUN pip install --no-cache-dir paho-mqtt==2.1.0
 COPY src/wyoming_openai_hazel /opt/hazel/wyoming_openai_hazel
 ENV PYTHONPATH=/opt/hazel \
     PYTHONUNBUFFERED=1

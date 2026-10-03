@@ -4,7 +4,7 @@ version = "0.0.0"
 description = "Opt-in extras for the wyoming_openai bridge (early transcription, GPU wake hook, TTS concurrency, voice display names)"
 requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
-dependencies = []   # provided by the upstream base image: wyoming, openai, wyoming_openai
+dependencies = []   # provided by the upstream base image: wyoming, openai, wyoming_openai; paho-mqtt (optional MQTT sensor) is pinned in the Dockerfile's base stage
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
