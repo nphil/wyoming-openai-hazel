@@ -69,5 +69,11 @@ async def test_without_the_setting_the_bridge_behaves_exactly_like_the_stock_bri
     stock = await (await bridge(args=[sys.executable, "-m", "wyoming_openai"])).client().synthesize(" ".join(FOUR))
     assert backend.tts_max_in_flight == ours_in_flight > 1
     assert ours.pcm == stock.pcm
-    assert [len(c.audio) for _, c in ours.chunks] == [len(c.audio) for _, c in stock.chunks]
-    assert ours.event_types == stock.event_types
+    # Not the chunk sizes or count: since wyoming_openai 0.8.0 a sentence that finished before playback reached it is
+    # sent as one joined chunk, one still running is relayed in 2048-byte reads, and which happens is a timing race.
+    assert _without_repeated_chunks(ours.event_types) == _without_repeated_chunks(stock.event_types)
+
+
+def _without_repeated_chunks(types: list[str]) -> list[str]:
+    """The event sequence with each run of consecutive audio-chunk events counted once."""
+    return [t for i, t in enumerate(types) if not (t == "audio-chunk" and i and types[i - 1] == "audio-chunk")]
