@@ -83,9 +83,13 @@ def _dict_keys(source: str, variable: str) -> set[str]:
 def test_the_early_request_has_the_same_arguments_as_upstreams_own_request() -> None:
     """If upstream starts sending another field with its transcription request, the early request would lack it."""
     upstream_keys = _dict_keys(inspect.getsource(STOCK._handle_audio_stop), "transcription_kwargs")
-    our_keys = _dict_keys(inspect.getsource(hazel_handler.HazelEventHandler._early_request), "kwargs")
+    our_source = inspect.getsource(hazel_handler.HazelEventHandler._early_request)
+    our_keys = _dict_keys(our_source, "kwargs")
     # "stream" is left out of the early request on purpose: streaming models never take the early path.
-    assert our_keys == upstream_keys - {"stream"}
+    # "languages" (wyoming_openai >= 0.8.0) is added after the literal, only when set, like extra_body.
+    assert our_keys == upstream_keys - {"stream", "languages"}
+    if "languages" in upstream_keys:
+        assert 'kwargs["languages"]' in our_source
 
 
 def test_the_installed_openai_sdk_accepts_what_we_pass() -> None:

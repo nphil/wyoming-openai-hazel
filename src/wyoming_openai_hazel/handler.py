@@ -84,15 +84,25 @@ class HazelEventHandler(OpenAIEventHandler):
             writer.setframerate(rate)
             writer.writeframes(pcm)
         wav.seek(0)
+        model_name = self._current_asr_model.name
+        language, languages = self._current_language, None
+        extra_body = self._get_stt_extra_body()
+        # wyoming_openai >= 0.8.0: models that take a `languages` list get it instead of `language`, exactly as upstream
+        # builds its own request. Looked up by name so older upstream versions keep working without it.
+        plural = getattr(self, "_apply_plural_stt_languages", None)
+        if plural is not None:
+            language, languages, extra_body = plural(model_name, language, extra_body)
         kwargs: dict[str, Any] = {
             "file": wav,
-            "model": self._current_asr_model.name,
-            "language": self._current_language if self._current_language is not None else omit,
+            "model": model_name,
+            "language": language if language is not None else omit,
             "temperature": self._stt_temperature if self._stt_temperature is not None else omit,
             "prompt": self._stt_prompt if self._stt_prompt is not None else omit,
             "response_format": "json",
         }
-        extra_body = self._get_stt_extra_body()
+        # Only when set: SDKs older than wyoming_openai 0.8.0 ships do not accept the keyword at all.
+        if languages is not None:
+            kwargs["languages"] = languages
         if extra_body:
             kwargs["extra_body"] = extra_body
         return await self._hazel_real_transcriptions.create_early(**kwargs)
